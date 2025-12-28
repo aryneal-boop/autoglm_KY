@@ -1,0 +1,28 @@
+#!/system/bin/sh
+# adb: wrapper to run adb from terminal
+# osm0sis @ xda-developers
+
+dir="$(cd "$(dirname "$0")"; pwd)";
+
+# 部分 ROM 会对应用私有目录施加 noexec，导致直接执行 $dir/adb.bin 报 Permission denied。
+# 通过系统 linker 启动可绕过该限制。
+if [ -x /system/bin/linker64 ]; then
+  linker=/system/bin/linker64
+else
+  linker=/system/bin/linker
+fi
+
+# adb.bin 依赖的 so 会被应用释放到 files/lib 下（与 bin 同级）。
+libdir="$dir/../lib"
+export LD_LIBRARY_PATH="$libdir:${LD_LIBRARY_PATH}"
+
+# 不要强制覆盖 HOME/TMPDIR：应用侧（Kotlin/Python）会把它们设置到私有目录，
+# 以便存放 adbkey 与临时文件。
+export HOME="${HOME:-/sdcard}";
+export TMPDIR="${TMPDIR:-/data/local/tmp}";
+
+case $1 in
+  ""|help|--help|version|--version) $linker "$dir/adb.bin" "$@" | sed 's/adb.bin/adb/';;
+  *) $linker "$dir/adb.bin" "$@";;
+esac;
+

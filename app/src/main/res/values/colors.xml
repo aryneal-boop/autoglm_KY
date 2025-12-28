@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="purple_200">#FFBB86FC</color>
+    <color name="purple_500">#FF6200EE</color>
+    <color name="purple_700">#FF3700B3</color>
+    <color name="teal_200">#FF03DAC5</color>
+    <color name="teal_700">#FF018786</color>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+
+    <!-- 机体测试风格颜色 -->
+    <color name="bg_dark">#FF0A0E14</color>
+    <color name="bg_dark_secondary">#FF1A212F</color>
+    <color name="neon_cyan">#FF00FFCC</color>
+    <color name="neon_blue">#FF2EC7FF</color>
+    <color name="neon_purple">#FF8B5CFF</color>
+    <color name="neon_pink">#FFFF3D8D</color>
+    <color name="text_primary">#E6FFFFFF</color>
+    <color name="text_secondary">#99FFFFFF</color>
+    <color name="text_hint">#66FFFFFF</color>
+    <color name="divider_dark">#22FFFFFF</color>
+    <color name="btn_bg_dark">#590A0E14</color>
+    <color name="input_bg_dark">#330A0E14</color>
+</resources>

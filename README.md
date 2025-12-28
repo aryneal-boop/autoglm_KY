@@ -1,0 +1,243 @@
+# AutoGLM Android（autoglm_test）
+
+本仓库是一个 **Android App（Kotlin + Compose）**，内置 **Chaquopy(Python)** 运行环境，在手机端完成：
+- 通过 **无线调试 ADB（mDNS 扫描 + adb pair/connect）** 连接到设备（常见场景是连接到本机/同机的 `127.0.0.1:PORT`）。
+- 通过 **Python 侧 Agent（`phone_agent` / `autoglm`）** 调用 OpenAI 兼容接口的多模态模型服务，生成动作并驱动 ADB 执行。
+- 提供一个对话 UI（`ChatActivity`）用于输入指令、展示模型/执行日志，并带有语音录入（录音 + Python 语音转写）。
+
+> 面向 AI 新对话：优先阅读本 README 的「项目结构」「关键链路」「排障入口」三节。
+
+## 1. 技术栈与关键约束
+
+- **Android**
+  - `compileSdk = 36` / `targetSdk = 36`
+  - `minSdk = 30`
+  - UI：Compose + 部分 XML Layout（`res/layout`）
+- **Python（Chaquopy）**
+  - Chaquopy 插件版本：`17.0.0`（见 `gradle/libs.versions.toml`）
+  - Python 解释器版本：`3.13`（见 `app/build.gradle.kts` -> `chaquopy.defaultConfig.version`）
+  - pip 依赖（节选）：`openai`、`httpx`、`requests`、`PyJWT`、`Pillow`
+- **模型服务**
+  - 走 OpenAI 兼容风格调用（具体在 Python 侧实现）
+  - 运行时配置通过 Android 侧注入环境变量（见 `PythonConfigBridge`）
+- **ADB**
+  - 项目将 ADB 二进制放进 `app/src/main/assets/`（如 `adb.bin-arm64`、`adb-libs/`）
+  - ADB 配对/连接由 App 内部逻辑执行（`PairingService`），并会扫描 mDNS：
+    - `_adb-tls-pairing._tcp`（配对端口）
+    - `_adb-tls-connect._tcp`（连接端口）
+
+## 2. 运行方式（开发者视角）
+
+### 2.1 构建/运行
+
+- 用 Android Studio 打开根目录工程
+- 直接运行 `app` 模块
+
+主要 Gradle 文件：
+- `settings.gradle.kts`：包含 Chaquopy Maven 源
+- `gradle/libs.versions.toml`：统一版本
+- `app/build.gradle.kts`：Android + Chaquopy + pip 依赖
+
+### 2.2 App 内部使用流程（典型）
+
+1. 启动 App -> 进入 `MainActivity`
+2. 首次引导/权限校准：
+   - 通知权限（Android 13+）
+   - 悬浮窗权限（用于状态悬浮窗/麦克风入口等）
+   - 电池白名单（避免后台被杀）
+3. 引导用户进入系统开发者选项的无线调试界面，并通过通知栏输入 6 位配对码
+4. `PairingService` 执行：扫描端口 -> `adb pair` -> 扫描连接端口 -> `adb connect` -> `adb devices` 校验
+5. 成功后进入 `ChatActivity`：输入指令，触发 Python 侧任务执行
+
+## 3. 项目结构（AI 快速导航）
+
+> 这里的路径以仓库根目录为基准。
+
+```text
+.
+├── app/
+│   ├── build.gradle.kts
+│   └── src/main/
+│       ├── AndroidManifest.xml
+│       ├── assets/
+│       │   ├── adb
+│       │   ├── adb.bin-arm64
+│       │   └── adb-libs/
+│       ├── java/com/example/autoglm/
+│       │   ├── AutoglmApp.kt
+│       │   ├── MainActivity.kt
+│       │   ├── ChatActivity.kt
+│       │   ├── SettingsActivity.kt
+│       │   ├── MonitorActivity.kt
+│       │   ├── PairingService.kt
+│       │   ├── PairingInputReceiver.kt
+│       │   ├── LocalAdb.kt
+│       │   ├── AdbPortScanner.kt
+│       │   ├── AdbAutoConnectManager.kt
+│       │   ├── AdbPermissionGranter.kt
+│       │   ├── VirtualDisplayController.kt
+│       │   ├── FloatingStatusService.kt
+│       │   ├── TapIndicatorService.kt
+│       │   ├── TaskControl.kt
+│       │   ├── ConfigManager.kt
+│       │   └── PythonConfigBridge.kt
+│       ├── python/
+│       │   ├── autoglm/
+│       │   └── phone_agent/
+│       └── res/
+│           ├── layout/
+│           ├── values/
+│           └── xml/
+├── gradle/
+│   └── libs.versions.toml
+├── build.gradle.kts
+└── settings.gradle.kts
+```
+
+### 3.1 Android 侧关键入口
+
+- **Application**：`app/src/main/java/.../AutoglmApp.kt`
+  - 负责初始化全局状态：`AppState.init`、`TaskControl.init`、`VirtualDisplayController` 等
+- **启动入口 Activity**：`MainActivity.kt`
+  - 引导/校准流程（权限、API 自检、ADB 自动连接）
+  - 使用 Chaquopy 启动 Python 并调用 `phone_agent.model.client.test_api_connection`
+- **对话与任务 Activity**：`ChatActivity.kt`
+  - 聊天 UI（RecyclerView + Compose 输入条）
+  - 语音录音 + Python 侧语音转写：调用 `autoglm.bridge.speech_to_text`
+  - 执行任务前会校验 ADB 状态（`adb connect` + `adb devices`）
+- **无线调试配对服务**：`PairingService.kt`
+  - 通知栏 RemoteInput 输入 6 位配对码
+  - 自动扫描配对端口与连接端口并重试
+  - 成功后保存最近连接 endpoint（`ConfigManager.setLastAdbEndpoint`）
+
+### 3.2 Kotlin -> Python 的配置注入
+
+- `PythonConfigBridge.injectModelServiceConfig(context, py)`
+  - 将 Android 侧配置写入 Python 的 `os.environ`：
+    - `PHONE_AGENT_BASE_URL`
+    - `PHONE_AGENT_MODEL`
+    - `PHONE_AGENT_API_KEY`
+    - `PHONE_AGENT_EXECUTION_ENV`
+    - `PHONE_AGENT_DISPLAY_ID`
+    - 以及 `ZHIPU_API_KEY`（复用同一份 key）
+
+### 3.3 模块功能拆解（Android/Kotlin 侧）
+
+> 本节是“按模块解释代码在做什么”，用于你要改代码/定位问题时快速找到责任归属。
+
+- **[全局初始化与生命周期挂钩]**
+  - `AutoglmApp.kt` / `AppState`
+    - 保存全局 `applicationContext`，并在启动时调用 `TaskControl.init`。
+    - 安装/重置与显示相关的全局观察者（见 `VirtualDisplayController.ensureProcessLifecycleObserverInstalled` / `hardResetOverlayAsync`）。
+  - `TaskControl.kt`
+    - 维护全局“任务是否运行/是否需要停止”的状态（`isTaskRunning` / `shouldStopTask`）。
+    - 用单线程 `ExecutorService` 串行执行 Python 任务（避免并发的 ADB/Python 状态冲突）。
+    - `stop()` / `forceStopPython()` 会尝试中断 Python 线程，并做 ADB/显示相关善后。
+
+- **[配置与密钥管理]**
+  - `ConfigManager.kt`
+    - 使用 `EncryptedSharedPreferences` 保存模型服务配置（`baseUrl/apiKey/modelName`）。
+    - 保存 ADB 最近一次连接信息（`LAST_ADB_ENDPOINT`）以及执行环境/连接模式（`EXECUTION_ENVIRONMENT`、`ADB_CONNECT_MODE`）。
+  - `PythonConfigBridge.kt`
+    - 将 `ConfigManager` 的配置同步到 Python `os.environ`。
+    - 同时注入 `PHONE_AGENT_CONNECT_MODE`/`AUTOGM_CONNECT_MODE` 用于 Python 侧选择 ADB/Shizuku 等实现。
+
+- **[本地 ADB 子系统（在手机上跑 adb）]**
+  - `LocalAdb.kt`
+    - 负责 ADB 二进制的定位/启动方式适配：
+      - 优先使用 `filesDir/bin/adb` 的“脚本包装器”，统一通过 `/system/bin/sh` 启动，规避部分 ROM 的 `noexec`/`EACCES`。
+      - 必要时通过系统 `linker64/linker` 启动 `adb.bin`。
+    - 构造并注入运行环境变量（`HOME`/`TMPDIR`/`LD_LIBRARY_PATH`/`ADB_VENDOR_KEYS`）。
+    - 承担命令执行与失败日志截断（用于排障时抓关键输出）。
+
+- **[无线调试端口发现与自动连接]**
+  - `AdbPortScanner.kt`
+    - 用 NSD/mDNS 扫描 `_adb-tls-pairing._tcp.` 与 `_adb-tls-connect._tcp.`。
+    - 为了提升 mDNS 发现成功率，会尝试获取 `WifiManager.MulticastLock`。
+  - `AdbAutoConnectManager.kt`
+    - 启动后优先使用历史 endpoint（`ConfigManager.getLastAdbEndpoint()`）快速重连。
+    - 失败后退化为 mDNS 自动扫描 connect 端口，再执行 `adb connect` + `adb devices` 验证。
+    - 连接成功后会触发 `AdbPermissionGranter.applyAdbPowerUserPermissions`（尽力自动授予常用权限）。
+
+- **[通知栏配对/连接的前台服务]**
+  - `PairingService.kt` + `PairingInputReceiver.kt`
+    - 以前台服务形式承载配对流程，通知栏 `RemoteInput` 收集 6 位配对码。
+    - 支持“端口变化/扫描失败”的重试策略：配对失败会刷新 `_adb-tls-pairing` 端口并重试，配对成功后再扫描 `_adb-tls-connect`。
+
+- **[悬浮窗状态条与语音入口]**
+  - `FloatingStatusService.kt`
+    - 提供常驻前台服务 + 悬浮窗条：显示任务状态、提供“停止/开始任务”等入口。
+    - 内置按住说话录音逻辑，录音后会通过 Chaquopy 调用 Python 侧语音转写（见 `autoglm.bridge.speech_to_text`）。
+    - 通过广播与 `ChatActivity` 交互（例如 `ACTION_STOP_CLICKED`、`ACTION_START_TASK`）。
+
+- **[Shizuku 通道（可选）]**
+  - `ShizukuBridge.kt`
+    - 通过 Shizuku 提供的 binder 启动 `sh -c` 命令并捕获 stdout/stderr。
+    - Python 侧会在 `AUTOGM_CONNECT_MODE=SHIZUKU` 时走该通道执行 `input/screencap/am` 等命令（见下文 Python 模块）。
+
+- **[聊天数据结构与 UI 适配层]**
+  - `chat/`（如 `ChatAdapter`、`ChatEventBus`、`ChatMessage`、`MessageRole/Type`）
+    - 承担“消息列表/流式追加/历史快照”的 UI 数据模型。
+  - `ChatActivity.kt`
+    - Kotlin 侧的主交互面：展示消息、接入悬浮窗广播、触发 Python 任务执行并把回调内容映射为聊天流。
+
+### 3.4 模块功能拆解（Python/Chaquopy 侧）
+
+- **[Android 侧入口：任务循环与回调协议]**
+  - `autoglm/android_bridge.py`
+    - `run_task(task, callback, internal_adb_path)` 是 Kotlin 调用的主入口。
+    - 通过 `callback.on_action/on_screenshot/on_done/on_error` 将执行过程实时推回 Android UI。
+    - 每一步都会先截屏（`phone_agent.adb.get_screenshot`）再让 Agent 决策，确保 UI 能看到“AI 在看什么”。
+
+- **[语音转写]**
+  - `autoglm/bridge.py`
+    - `speech_to_text(audio_path)`：优先读取 `ZHIPU_API_KEY`，否则回退 `PHONE_AGENT_API_KEY`。
+    - 可选对 wav 做归一化（由 `AUTOGLM_STT_NORMALIZE` 等环境变量控制）。
+
+- **[模型调用（OpenAI 兼容）]**
+  - `autoglm/phone_agent/model/client.py`
+    - `ModelClient` 每次请求前会从 Android `ConfigManager`/环境变量刷新 `base_url/api_key/model_name`，保证“运行时改设置立即生效”。
+    - 主要走 `chat.completions.create(stream=True)`，并按 `finish(message=...)` / `do(action=...)` 规则从流中切分 thinking 与 action。
+    - `test_api_connection()` 是 Android 启动阶段用于自检连通性的入口（分别探测 `/models` 与 `/chat/completions`）。
+
+- **[设备抽象与连接模式选择]**
+  - `autoglm/phone_agent/device_factory.py`
+    - 统一抽象 `tap/swipe/home/back/get_screenshot/...`，底层可切换 ADB/HDC/Shizuku。
+  - `autoglm/phone_agent/adb/adb_path.py`
+    - 通过 `INTERNAL_ADB_PATH` 支持 Android 私有目录内的 adb，并对脚本包装器统一用 `/system/bin/sh` 启动以规避 `PermissionError`。
+  - `autoglm/phone_agent/shizuku.py`
+    - 通过 `ShizukuBridge` 执行 `screencap/input/am/monkey` 等命令，提供截图与输入能力；并对“黑屏/敏感截图”做降级兜底。
+
+## 4. 关键链路（从“用户输入”到“ADB 执行”）
+
+- **文本指令**：~~`ChatActivity` -> `runPythonTask(...)` -> Python 侧解析/调用模型 -> 返回动作 -> Kotlin/ADB 执行~~
+  - 实际实现：`ChatActivity` 触发 Chaquopy 调用 `autoglm/android_bridge.py::run_task`，由 Python 侧 `phone_agent` 直接通过 **内置 ADB/Shizuku 通道** 执行动作；Kotlin 侧主要负责 UI、权限/连接准备与把 Python 回调映射成聊天流。
+- **语音指令**：~~录音生成 wav -> `autoglm.bridge.speech_to_text(wavPath)` -> 得到文本 -> 同上~~
+  - 实际实现：Kotlin 录音生成 wav 后调用 `autoglm/bridge.py::speech_to_text` 转写为文本，再走与文本指令相同的 `run_task` 执行链路。
+ - **ADB 可用性**：
+   - 读取最近 endpoint（`ConfigManager.getLastAdbEndpoint`）
+   - 执行 `adb connect <endpoint>`
+   - 执行 `adb devices` 检查是否为 `device`
+
+## 5. 常见排障入口（定位问题优先看这里）
+
+- **Gradle/依赖问题**
+  - `app/build.gradle.kts`（Chaquopy/pip 依赖在这里）
+  - `gradle/libs.versions.toml`（统一版本）
+- **ADB 连接/配对失败**
+  - `PairingService.kt`（扫描 + 重试 + 通知提示）
+  - `AdbPortScanner.kt` / `LocalAdb.kt`（mDNS/命令执行）
+  - 确认系统无线调试已开启，且同一网络下可发现 mDNS 广播
+- **模型 API 连接失败**
+  - `MainActivity.kt` 中的 `test_api_connection`
+  - `PythonConfigBridge.kt` 是否注入了正确的 `baseUrl/model/apiKey`
+- **Python 运行异常**
+  - Python 源码位于：`app/src/main/python/`
+  - 重点模块：`autoglm.bridge`、`phone_agent.model.client`（具体实现以仓库实际代码为准）
+
+## 6. 给新 AI 的协作提示（写代码时）
+
+- 需要调整 Python 逻辑：优先在 `app/src/main/python/` 下改。
+- 需要调整 ADB 配对/连接：优先看 `PairingService.kt`、`AdbPortScanner.kt`、`LocalAdb.kt`。
+- 需要调整“模型服务配置/环境变量”：改 `ConfigManager` 和 `PythonConfigBridge`。
+- 如果要改 SDK / Chaquopy / pip 依赖：先检查 `gradle/libs.versions.toml` 和 `app/build.gradle.kts` 是否会产生冲突。
