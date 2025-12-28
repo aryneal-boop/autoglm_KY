@@ -176,13 +176,5 @@ object TaskControl {
         currentJob = null
         pythonThread = null
         runningFuture = null
-
-        try {
-            val ctx = appContext
-            if (ctx != null) {
-                VirtualDisplayController.cleanupAsync(ctx)
-            }
-        } catch (_: Exception) {
-        }
     }
 }

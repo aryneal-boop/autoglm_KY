@@ -17,7 +17,7 @@
     <ImageView
         android:id="@+id/ivPreview"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
+        android:layout_height="100dp"
         android:layout_marginTop="12dp"
         android:layout_weight="1"
         android:adjustViewBounds="true"
@@ -33,7 +33,7 @@
         <SurfaceView
             android:id="@+id/svPreview"
             android:layout_width="match_parent"
-            android:layout_height="match_parent"
+            android:layout_height="193dp"
             android:background="@color/input_bg_dark" />
 
         <TextView
@@ -57,6 +57,13 @@
             android:textSize="13sp" />
 
     </FrameLayout>
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/rvApps"
+        android:layout_width="match_parent"
+        android:layout_height="103dp"
+        android:layout_marginTop="12dp"
+        android:background="@color/input_bg_dark" />
 
     <Button
         android:id="@+id/btnClose"

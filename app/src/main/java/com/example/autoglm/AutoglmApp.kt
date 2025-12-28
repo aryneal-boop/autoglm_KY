@@ -2,10 +2,18 @@ package com.example.autoglm
 
 import android.app.Application
 import android.content.Context
+import android.os.Build
+import org.lsposed.hiddenapibypass.HiddenApiBypass
 
 class AutoglmApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        try {
+            if (Build.VERSION.SDK_INT >= 28) {
+                HiddenApiBypass.addHiddenApiExemptions("L")
+            }
+        } catch (_: Throwable) {
+        }
         AppState.init(this)
     }
 }

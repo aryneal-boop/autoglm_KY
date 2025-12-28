@@ -1356,7 +1356,20 @@ class ChatActivity : ComponentActivity() {
 
                 val callback = AndroidAgentCallback(
                     onAction = { msg -> appendOrMergeActionText(msg) },
-                    onScreenshotBase64 = { b64 -> appendImage(b64) },
+                    onScreenshotBase64 = { b64 ->
+                        var used = b64
+                        try {
+                            val execEnv = ConfigManager(this@ChatActivity).getExecutionEnvironment()
+                            if (execEnv == ConfigManager.EXEC_ENV_VIRTUAL) {
+                                val vd = VirtualDisplayController.screenshotPngBase64NonBlack()
+                                if (vd.isNotEmpty()) {
+                                    used = vd
+                                }
+                            }
+                        } catch (_: Exception) {
+                        }
+                        appendImage(used)
+                    },
                     onAssistant = { msg ->
                         assistantTextUpdated = true
                         appendOrMergeAssistantText(msg)
