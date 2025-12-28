@@ -1,0 +1,340 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+    
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            android:orientation="vertical">
+            
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+                
+                <TextView
+                    android:id="@+id/shizukuStatusPrefix"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Shizuku 权限状态: " />
+
+                <TextView
+                    android:id="@+id/shizukuStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+
+                <Button
+                    android:id="@+id/shizukuPermissionBtn"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="授权"
+                    android:visibility="gone" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="8dp">
+                
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="无障碍权限状态: " />
+
+                <TextView
+                    android:id="@+id/accessibilityStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+
+                <Button
+                    android:id="@+id/accessibilityPermissionBtn"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="授权"
+                    android:visibility="gone" />
+                
+                <CheckBox
+                    android:id="@+id/disableAccessibilityCheckbox"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="禁用" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="8dp">
+                
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="悬浮窗权限状态: " />
+
+                <TextView
+                    android:id="@+id/overlayStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+
+                <Button
+                    android:id="@+id/overlayPermissionBtn"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="授权"
+                    android:visibility="gone" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <CheckBox
+            android:id="@+id/singleAppModeCheckbox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="单应用投屏（可以投微软桌面这类启动器类型的应用）"
+            android:textSize="16sp"
+            android:padding="8dp"/>
+
+        <LinearLayout
+            android:id="@+id/singleAppContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <Button
+                android:id="@+id/selectAppButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="选择被投屏应用"
+                android:layout_marginTop="8dp"
+                android:layout_marginStart="16dp"/>
+
+            <CheckBox
+                android:id="@+id/autoBindInputCheckbox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="自动移动鼠标等到外接屏幕（鼠标仅对 shizuku 授权后的安卓15有效，推荐鼠标用户使用镜像模式去黑边。蓝牙手柄和键盘跟随系统焦点，通过熄屏按钮转移焦点）"
+                android:textSize="16sp"
+                android:padding="8dp"/>
+
+            <CheckBox
+                android:id="@+id/autoMoveImeCheckbox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="自动移动输入法到外接屏幕"
+                android:textSize="16sp"
+                android:padding="8dp"/>
+
+            <CheckBox
+                android:id="@+id/useTouchscreenCheckbox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="启用主屏触摸控制扩展屏"
+                android:textSize="16sp"
+                android:padding="8dp"/>
+
+            <LinearLayout
+                android:id="@+id/dpiLayout"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="8dp"
+                android:layout_marginStart="16dp"
+                android:gravity="center_vertical">
+                
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="DPI文字大小: "
+                    android:textSize="16sp"/>
+                    
+                <EditText
+                    android:id="@+id/dpiEditText"
+                    android:layout_width="100dp"
+                    android:layout_height="wrap_content"
+                    android:inputType="number"
+                    android:hint="160"
+                    android:text="160"/>
+                    
+                <Button
+                    android:id="@+id/dpiConfirmButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="确认"/>
+            </LinearLayout>
+        </LinearLayout>
+
+        <CheckBox
+            android:id="@+id/autoRotateCheckbox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="自动旋转"
+            android:textSize="16sp"
+            android:padding="8dp"/>
+
+        <CheckBox
+            android:id="@+id/autoScaleCheckbox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="自动缩放去黑边"
+            android:textSize="16sp"
+            android:padding="8dp"/>
+
+        <CheckBox
+            android:id="@+id/autoScreenOffCheckbox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="自动熄屏"
+            android:textSize="16sp"
+            android:padding="8dp"/>
+
+        <CheckBox
+            android:id="@+id/useBlackImageCheckbox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="使用黑色图片模拟熄屏"
+            android:textSize="16sp"
+            android:padding="8dp"/>
+
+        <CheckBox
+            android:id="@+id/disableUsbAudioCheckbox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="停用USB外接屏幕的声音输出（moonlight播放声音设备使用moonlight的设置）"
+            android:textSize="16sp"
+            android:padding="8dp"/>
+
+        <CheckBox
+            android:id="@+id/autoMatchAspectRatioCheckbox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="自动改变主屏宽高比以适配扩展屏"
+            android:textSize="16sp"
+            android:padding="8dp"/>
+
+        <CheckBox
+            android:id="@+id/showFloatingInMirrorModeCheckbox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="在镜像模式下也显示悬浮返回键"
+            android:textSize="16sp"
+            android:padding="8dp"/>
+
+        <CheckBox
+            android:id="@+id/preventAutoLockCheckbox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="阻止自动锁屏（原理是修改系统设置里的超时时间）"
+            android:textSize="16sp"
+            android:padding="8dp"/>
+
+        <CheckBox
+            android:id="@+id/disableRemoteSubmixCheckbox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="moonlight无声音，尝试不使用 REMOTE_SUBMIX"
+            android:textSize="16sp"
+            android:padding="8dp"/>
+
+        <CheckBox
+            android:id="@+id/autoHideFloatingCheckbox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="自动隐藏悬浮返回键（单击返回上一级，双击返回被投屏应用）"
+            android:textSize="16sp"
+            android:padding="8dp"/>
+
+        <CheckBox
+            android:id="@+id/autoConnectClientCheckbox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="自动连接moonlight自启版（普通版无法自动连接）"
+            android:textSize="16sp"
+            android:padding="8dp"/>
+            
+        <LinearLayout
+            android:id="@+id/clientConnectionContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginStart="16dp"
+            android:layout_marginTop="8dp"
+            android:visibility="gone"
+            android:gravity="center_vertical">
+                
+            <Spinner
+                android:id="@+id/clientSpinner"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginEnd="8dp"/>
+                
+            <Button
+                android:id="@+id/connectClientButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="连接"/>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginTop="16dp">
+            
+            <TextView
+                android:id="@+id/currentResolutionText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Displaylink 输出分辨率: "
+                android:textSize="16sp"
+                android:padding="8dp"/>
+                
+            <Button
+                android:id="@+id/resolutionButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="修改 Displaylink 输出分辨率"
+                android:textSize="16sp"/>
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/aboutButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="关于"
+            android:textSize="16sp"/>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="* 注: 安卓系统设置里的无线投屏创建的无线屏幕，也是可以用 shizuku 权限投单应用的"
+            android:textSize="14sp"
+            android:textColor="#666666"/>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="* 注: usb 3.0 有线直连的屏幕，无需 shizuku 权限就能投单应用"
+            android:textSize="14sp"
+            android:textColor="#666666"/>
+
+    </LinearLayout>
+</ScrollView> 
