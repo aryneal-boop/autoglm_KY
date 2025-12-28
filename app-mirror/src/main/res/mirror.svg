@@ -1,0 +1,43 @@
+<svg width="100" height="100" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <!-- 背景框 -->
+  <rect x="5" y="5" width="90" height="90" fill="#f0f0f0" rx="5" ry="5"/>
+  
+  <!-- 显示器底座 -->
+  <path d="M40 75 L60 75 L65 78 L35 78 Z" 
+        fill="#444444"/>
+  
+  <!-- 显示器支架 -->
+  <path d="M47 65 L53 65 L53 75 L47 75 Z" 
+        fill="#555555"/>
+  
+  <!-- 支架连接处 -->
+  <ellipse cx="50" cy="65" rx="4" ry="1.5" 
+           fill="#666666"/>
+  
+  <!-- 后面的27寸显示器 -->
+  <rect x="15" y="20" width="70" height="45" 
+        fill="url(#blueGradient)" 
+        filter="drop-shadow(2px 2px 3px rgba(0,0,0,0.3))"
+        rx="3" ry="3"/>
+  
+  <!-- 前面的手机屏幕 -->
+  <rect x="25" y="55" width="20" height="30" 
+        fill="url(#blueGradient)" 
+        filter="drop-shadow(1px 1px 2px rgba(0,0,0,0.3))"
+        rx="2" ry="2"/>
+        
+  <!-- 蓝色渐变定义 -->
+  <defs>
+    <linearGradient id="blueGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#4da6ff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0066cc;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- 支架渐变 -->
+    <linearGradient id="standGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#444444;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#666666;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#444444;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+</svg>
