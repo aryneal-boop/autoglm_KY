@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">屏连</string>
+    <string name="accessibility_service_description">用于在副屏上模拟触摸事件的无障碍服务</string>
+    <string name="go_dark_button">切换暗色模式</string>
+    <string name="back_button">返回按钮</string>
+    <string name="home_button">主页按钮</string>
+</resources>
