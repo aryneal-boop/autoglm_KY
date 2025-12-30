@@ -1,9 +1,7 @@
 package com.example.autoglm
 
-import android.content.Intent
 import android.os.Bundle
 import android.os.Build
-import android.widget.Toast
 import android.widget.Button
 import android.widget.EditText
 import android.widget.RadioButton
@@ -54,7 +52,6 @@ class SettingsActivity : ComponentActivity() {
         val rgExecEnv = findViewById<RadioGroup>(R.id.rgExecutionEnvironment)
         val rbExecEnvMain = findViewById<RadioButton>(R.id.rbExecEnvMain)
         val rbExecEnvVirtual = findViewById<RadioButton>(R.id.rbExecEnvVirtual)
-        val btnMonitor = findViewById<Button>(R.id.btnMonitor)
         val btnSave = findViewById<Button>(R.id.btnSave)
         val btnCancel = findViewById<Button>(R.id.btnCancel)
 
@@ -67,30 +64,6 @@ class SettingsActivity : ComponentActivity() {
             rbExecEnvVirtual.isChecked = true
         } else {
             rbExecEnvMain.isChecked = true
-        }
-
-        btnMonitor.setOnClickListener {
-            val did = try {
-                VirtualDisplayController.ensureVirtualDisplayForMonitor(this)
-            } catch (_: Exception) {
-                null
-            }
-            if (did == null) {
-                try {
-                    Toast.makeText(this, "虚拟屏创建失败", Toast.LENGTH_SHORT).show()
-                } catch (_: Exception) {
-                }
-                return@setOnClickListener
-            }
-
-            try {
-                startActivity(Intent(this, MonitorActivity::class.java))
-            } catch (_: Exception) {
-                try {
-                    Toast.makeText(this, "无法打开监视器界面", Toast.LENGTH_SHORT).show()
-                } catch (_: Exception) {
-                }
-            }
         }
 
         btnSave.setOnClickListener {

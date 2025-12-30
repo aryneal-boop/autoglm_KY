@@ -108,12 +108,18 @@ class MonitorActivity : ComponentActivity() {
             override fun surfaceCreated(holder: SurfaceHolder) {
                 surfaceReady = true
                 val surface = holder.surface
+
+                val dm = resources.displayMetrics
+                val isLandscape = dm.widthPixels >= dm.heightPixels
+                val vdW = if (isLandscape) 854 else 480
+                val vdH = if (isLandscape) 480 else 854
+                val vdDpi = if (vdW == 480 || vdH == 480) 142 else 440
                 val r = ShizukuVirtualDisplaySurfaceStreamer.start(
                     ShizukuVirtualDisplaySurfaceStreamer.Args(
                         name = "AutoGLM-Virtual-Preview",
-                        width = 1080,
-                        height = 1920,
-                        dpi = 440,
+                        width = vdW,
+                        height = vdH,
+                        dpi = vdDpi,
                         refreshRate = 0f,
                         rotatesWithContent = false,
                     ),

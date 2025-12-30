@@ -201,17 +201,6 @@
 
             </RadioGroup>
 
-            <Button
-                android:id="@+id/btnMonitor"
-                android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:layout_marginTop="14dp"
-                android:background="@color/btn_bg_dark"
-                android:fontFamily="monospace"
-                android:text="开启视觉同步测试"
-                android:textColor="@color/neon_cyan"
-                android:textSize="14sp" />
-
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1dp"

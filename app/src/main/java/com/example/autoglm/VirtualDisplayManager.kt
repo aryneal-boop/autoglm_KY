@@ -13,7 +13,7 @@ class VirtualDisplayManager(
         val name: String?,
         val blockHasOverlayWord: Boolean,
         val hasOverlayUniqueId: Boolean,
-        val has720x1280: Boolean,
+        val has480p: Boolean,
     )
 
     private fun runShell(args: List<String>, timeoutMs: Long = 6_000L): LocalAdb.CommandResult {
@@ -104,7 +104,7 @@ class VirtualDisplayManager(
             return null
         }
 
-        fun has720x1280(block: String, anchor: Int): Boolean {
+        fun has480p(block: String, anchor: Int): Boolean {
             val m = Regex("\\b(\\d{2,5})\\s*x\\s*(\\d{2,5})\\b").findAll(block)
             var bestDist = Int.MAX_VALUE
             var bestOk = false
@@ -114,9 +114,9 @@ class VirtualDisplayManager(
                 val dist = kotlin.math.abs(mm.range.first - anchor)
                 if (dist < bestDist) {
                     bestDist = dist
-                    bestOk = (w == 720 && h == 1280)
+                    bestOk = (w == 854 && h == 480) || (w == 480 && h == 854)
                 }
-                if (w == 720 && h == 1280 && dist <= 200) return true
+                if (((w == 854 && h == 480) || (w == 480 && h == 854)) && dist <= 200) return true
             }
             return bestOk
         }
@@ -158,7 +158,7 @@ class VirtualDisplayManager(
                     name = name,
                     blockHasOverlayWord = block.contains("Overlay", ignoreCase = true),
                     hasOverlayUniqueId = hasOverlayUniqueId(block, anchor),
-                    has720x1280 = has720x1280(block, anchor),
+                    has480p = has480p(block, anchor),
                 )
             )
         }
@@ -166,7 +166,7 @@ class VirtualDisplayManager(
         return results
     }
 
-    private fun findOverlay720pDisplayId(dumpsys: String): Int? {
+    private fun findOverlay480pDisplayId(dumpsys: String): Int? {
         val list = scanDisplays(dumpsys)
         fun isOverlayLike(d: DisplayScanResult): Boolean {
             if (d.type.equals("INTERNAL", ignoreCase = true)) return false
@@ -178,7 +178,7 @@ class VirtualDisplayManager(
             it.displayId != 0 &&
                 isOverlayLike(it) &&
                 (it.name.orEmpty().contains("Overlay", ignoreCase = true) || it.blockHasOverlayWord || it.hasOverlayUniqueId) &&
-                it.has720x1280
+                it.has480p
         }.map { it.displayId }.sorted()
         return matched.firstOrNull()
     }
@@ -207,14 +207,14 @@ class VirtualDisplayManager(
                         (it.type.equals("VIRTUAL", ignoreCase = true) && it.hasOverlayUniqueId)
                 ) &&
                 (it.name.orEmpty().contains("Overlay", ignoreCase = true) || it.blockHasOverlayWord || it.hasOverlayUniqueId) &&
-                it.has720x1280
+                it.has480p
         }
     }
 
     fun enableOverlayDisplay720p(): Int? {
         val before = readDumpsysDisplay()
         val existing = try {
-            findOverlay720pDisplayId(before)
+            findOverlay480pDisplayId(before)
         } catch (_: Exception) {
             null
         }
@@ -230,7 +230,7 @@ class VirtualDisplayManager(
         }
 
         val put = runShell(
-            listOf("settings", "put", "global", "overlay_display_devices", "720x1280/320"),
+            listOf("settings", "put", "global", "overlay_display_devices", "480x854/320"),
             timeoutMs = 6_000L,
         )
         Log.i(TAG, "overlay_display_devices(put) exit=${put.exitCode} out=${put.output.take(200)}")
@@ -249,7 +249,7 @@ class VirtualDisplayManager(
             }
             val after = readDumpsysDisplay()
             val id = try {
-                findOverlay720pDisplayId(after)
+                findOverlay480pDisplayId(after)
             } catch (_: Exception) {
                 null
             }

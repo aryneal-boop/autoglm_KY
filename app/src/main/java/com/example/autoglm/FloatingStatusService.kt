@@ -11,8 +11,10 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.content.res.Configuration
-import android.graphics.Color
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.LinearGradient
 import android.graphics.Matrix
 import android.graphics.Paint
@@ -30,6 +32,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.Looper
 import android.provider.Settings
+import android.util.Base64
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
@@ -38,6 +41,8 @@ import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.view.animation.LinearInterpolator
 import android.widget.ImageButton
+import android.widget.ImageView
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.animation.ValueAnimator
@@ -70,6 +75,15 @@ class FloatingStatusService : Service() {
     private var statusTextView: TextView? = null
     private var stopButtonView: View? = null
     private var barBackgroundDrawable: GradientDrawable? = null
+
+    private var toolboxPanelView: View? = null
+    private var toolboxPreviewView: ImageView? = null
+    private var toolboxCloseButtonView: View? = null
+    private var toolboxToMainButtonView: View? = null
+    private var toolboxHandleView: View? = null
+    private var toolboxExpanded: Boolean = false
+    private var toolboxPreviewBitmap: Bitmap? = null
+    private var toolboxPreviewTicker: Runnable? = null
 
     private var statusScrollAnimator: ValueAnimator? = null
 
@@ -105,6 +119,9 @@ class FloatingStatusService : Service() {
     private var dragDownLpX: Int = 0
     private var dragDownLpY: Int = 0
     private var dragging: Boolean = false
+    private var swipingToolbox: Boolean = false
+    private var swipeDownRawX: Float = 0f
+    private var swipeProgress: Float = 0f
     private var touchSlopPx: Int = 8
     private var dockOnRight: Boolean = false
     private var longPressRunnable: Runnable? = null
@@ -131,6 +148,203 @@ class FloatingStatusService : Service() {
     private fun screenWidthPx(): Int = resources.displayMetrics.widthPixels
     private fun screenHeightPx(): Int = resources.displayMetrics.heightPixels
 
+    private fun handleWidthPx(): Int = dp(30)
+
+    private fun toolboxWidthPx(): Int = dp(260)
+
+    private fun snapToolboxToEdge(lp: WindowManager.LayoutParams) {
+        val handleW = handleWidthPx()
+        val panelW = toolboxWidthPx()
+        val totalW = (if (toolboxExpanded) (handleW + panelW) else handleW).coerceAtLeast(1)
+
+        val sw = screenWidthPx().coerceAtLeast(1)
+        val centerX = lp.x + handleW / 2
+        val dockRight = centerX >= sw / 2
+        dockOnRight = dockRight
+
+        lp.x = if (dockRight) (sw - totalW).coerceAtLeast(0) else 0
+        applyDockBackground(dockRight)
+
+        val panel = toolboxPanelView
+        val handle = toolboxHandleView
+
+        if (panel != null) {
+            val plp = (panel.layoutParams as? FrameLayout.LayoutParams)
+                ?: FrameLayout.LayoutParams(panelW, FrameLayout.LayoutParams.WRAP_CONTENT)
+            plp.width = panelW
+            plp.gravity = if (dockRight) {
+                Gravity.END or Gravity.CENTER_VERTICAL
+            } else {
+                Gravity.START or Gravity.CENTER_VERTICAL
+            }
+            panel.layoutParams = plp
+        }
+
+        if (handle != null) {
+            val hlp = (handle.layoutParams as? FrameLayout.LayoutParams)
+                ?: FrameLayout.LayoutParams(handleW, FrameLayout.LayoutParams.WRAP_CONTENT)
+            hlp.width = handleW
+            hlp.gravity = if (dockRight) {
+                Gravity.END or Gravity.CENTER_VERTICAL
+            } else {
+                Gravity.START or Gravity.CENTER_VERTICAL
+            }
+            handle.layoutParams = hlp
+        }
+
+        if (panel is LinearLayout) {
+            val base = dp(10)
+            val reserve = handleW + dp(8)
+            panel.setPadding(
+                if (dockRight) base else reserve,
+                base,
+                if (dockRight) reserve else base,
+                base
+            )
+        }
+        if (panel != null && !toolboxExpanded) {
+            panel.translationX = if (dockRight) panelW.toFloat() else (-panelW).toFloat()
+        }
+    }
+
+    private fun setToolboxExpanded(expanded: Boolean, animate: Boolean) {
+        toolboxExpanded = expanded
+        val panel = toolboxPanelView ?: return
+        val w = toolboxWidthPx().toFloat()
+        val hiddenTx = if (dockOnRight) w else -w
+        val shownTx = 0f
+        panel.animate().cancel()
+        val wm = windowManager
+        val bar = barView
+        val lp = barLayoutParams
+
+        if (animate && !expanded) {
+            // Collapse: keep overlay width during animation; shrink after animation ends.
+            panel.animate()
+                .translationX(hiddenTx)
+                .setDuration(220L)
+                .withEndAction {
+                    if (wm != null && bar != null && lp != null) {
+                        val handleW = handleWidthPx()
+                        lp.width = handleW
+                        val sw = screenWidthPx().coerceAtLeast(1)
+                        lp.x = if (dockOnRight) (sw - handleW).coerceAtLeast(0) else 0
+                        try {
+                            wm.updateViewLayout(bar, lp)
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
+                .start()
+        } else {
+            if (animate) {
+                panel.animate()
+                    .translationX(if (expanded) shownTx else hiddenTx)
+                    .setDuration(220L)
+                    .start()
+            } else {
+                panel.translationX = if (expanded) shownTx else hiddenTx
+            }
+
+            if (wm != null && bar != null && lp != null) {
+                lp.width = if (expanded) (handleWidthPx() + toolboxWidthPx()) else handleWidthPx()
+                if (expanded) {
+                    snapToolboxToEdge(lp)
+                } else {
+                    val sw = screenWidthPx().coerceAtLeast(1)
+                    val handleW = handleWidthPx()
+                    lp.x = if (dockOnRight) (sw - handleW).coerceAtLeast(0) else 0
+                }
+                try {
+                    wm.updateViewLayout(bar, lp)
+                } catch (_: Exception) {
+                }
+            }
+        }
+
+        if (expanded) {
+            startToolboxPreviewTicker()
+        } else {
+            stopToolboxPreviewTicker()
+        }
+    }
+
+    private fun startToolboxPreviewTicker() {
+        val iv = toolboxPreviewView ?: return
+        stopToolboxPreviewTicker()
+        val r = object : Runnable {
+            override fun run() {
+                try {
+                    updateToolboxPreviewOnce(iv)
+                } catch (_: Exception) {
+                }
+                mainHandler.postDelayed(this, 250L)
+            }
+        }
+        toolboxPreviewTicker = r
+        mainHandler.post(r)
+    }
+
+    private fun stopToolboxPreviewTicker() {
+        toolboxPreviewTicker?.let { mainHandler.removeCallbacks(it) }
+        toolboxPreviewTicker = null
+    }
+
+    private fun updateToolboxPreviewOnce(iv: ImageView) {
+        runCatching { VirtualDisplayController.ensureFocusedDisplayBestEffort() }
+        val bmp = runCatching { com.example.autoglm.vdiso.ShizukuVirtualDisplayEngine.captureLatestBitmap().getOrNull() }
+            .getOrNull()
+            ?: return
+        val prev = toolboxPreviewBitmap
+        toolboxPreviewBitmap = bmp
+        iv.setImageBitmap(bmp)
+        try { prev?.recycle() } catch (_: Exception) {}
+    }
+
+    private fun getTopComponentOnDisplayBestEffort(displayId: Int): String {
+        if (displayId <= 0) return ""
+        if (!ShizukuBridge.pingBinder() || !ShizukuBridge.hasPermission()) return ""
+        val dump = runCatching { ShizukuBridge.execText("dumpsys activity activities") }.getOrNull().orEmpty()
+        if (dump.isBlank()) return ""
+
+        val resumedLines = dump.lineSequence()
+            .map { it.trim() }
+            .filter { it.contains("ResumedActivity") || it.contains("mResumedActivity") }
+            .toList()
+
+        val onDisplay = resumedLines.firstOrNull { it.contains("displayId=$displayId") }
+        if (onDisplay != null) return extractComponentFromDumpsysLine(onDisplay)
+
+        val any = resumedLines.firstOrNull().orEmpty()
+        return extractComponentFromDumpsysLine(any)
+    }
+
+    private fun extractComponentFromDumpsysLine(line: String): String {
+        val s = line.trim()
+        if (s.isEmpty()) return ""
+        val re = Regex("([a-zA-Z0-9_]+\\.[a-zA-Z0-9_\\.]+/[a-zA-Z0-9_\\.\\$]+)")
+        val m = re.find(s) ?: return ""
+        return m.groupValues.getOrNull(1).orEmpty()
+    }
+
+    private fun switchVirtualTopAppToMainDisplayBestEffort() {
+        val did = VirtualDisplayController.getDisplayId() ?: return
+        val component = getTopComponentOnDisplayBestEffort(did)
+        if (component.isBlank()) return
+        if (!ShizukuBridge.pingBinder() || !ShizukuBridge.hasPermission()) return
+
+        val flags = 0x10200000
+        val candidates = listOf(
+            "cmd activity start-activity --user 0 --display 0 --activity-reorder-to-front -n $component -f $flags",
+            "cmd activity start-activity --user 0 --display 0 -n $component -f $flags",
+            "am start --user 0 --display 0 --activity-reorder-to-front -n $component -f $flags",
+            "am start --user 0 --display 0 -n $component -f $flags",
+        )
+        for (c in candidates) {
+            runCatching { ShizukuBridge.execText(c) }
+        }
+    }
+
     private fun clampOverlayPosition(lp: WindowManager.LayoutParams, barWidthPx: Int, barHeightPx: Int) {
         val sw = screenWidthPx().coerceAtLeast(1)
         val sh = screenHeightPx().coerceAtLeast(1)
@@ -140,35 +354,6 @@ class FloatingStatusService : Service() {
         // gravity = CENTER_VERTICAL: y 是相对于屏幕中线的偏移
         val maxY = ((sh - barHeightPx) / 2).coerceAtLeast(0)
         lp.y = lp.y.coerceIn(-maxY, maxY)
-    }
-
-    private fun snapToEdge(lp: WindowManager.LayoutParams, barWidthPx: Int) {
-        val sw = screenWidthPx().coerceAtLeast(1)
-        val centerX = lp.x + barWidthPx / 2
-        val dockRight = centerX >= sw / 2
-        dockOnRight = dockRight
-        lp.x = if (dockRight) (sw - barWidthPx).coerceAtLeast(0) else 0
-        applyDockBackground(dockRight)
-        updateSummaryBubblePositionIfNeeded()
-    }
-
-    private fun applyDockBackground(dockRight: Boolean) {
-        val r = dp(12).toFloat()
-        barBackgroundDrawable?.cornerRadii = if (dockRight) {
-            floatArrayOf(
-                r, r,
-                0f, 0f,
-                0f, 0f,
-                r, r
-            )
-        } else {
-            floatArrayOf(
-                0f, 0f,
-                r, r,
-                r, r,
-                0f, 0f
-            )
-        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -260,11 +445,10 @@ class FloatingStatusService : Service() {
         val wm = windowManager ?: return
         val bar = barView ?: return
         val lp = barLayoutParams ?: return
-        val barW = bar.width.takeIf { it > 0 } ?: dp(30)
+        val barW = bar.width.takeIf { it > 0 } ?: (if (toolboxExpanded) (handleWidthPx() + toolboxWidthPx()) else handleWidthPx())
         val barH = bar.height.takeIf { it > 0 } ?: dp(120)
         clampOverlayPosition(lp, barW, barH)
-        snapToEdge(lp, barW)
-        applyDockBackground(dockOnRight)
+        snapToolboxToEdge(lp)
         try {
             wm.updateViewLayout(bar, lp)
         } catch (_: Exception) {
@@ -327,6 +511,9 @@ class FloatingStatusService : Service() {
             removeViewIfNeeded()
             windowManager = null
         }
+        stopToolboxPreviewTicker()
+        try { toolboxPreviewBitmap?.recycle() } catch (_: Exception) {}
+        toolboxPreviewBitmap = null
         try {
             stopMicFlowEffect()
         } catch (_: Exception) {
@@ -342,13 +529,25 @@ class FloatingStatusService : Service() {
         if (barView != null) return
 
         val context = this
-        val barWidth = dp(30)
+        val barWidth = handleWidthPx()
 
         val bgDrawable = GradientDrawable().apply {
             setColor(Color.parseColor("#99000000"))
         }
         barBackgroundDrawable = bgDrawable
         applyDockBackground(dockOnRight)
+
+        val root = FrameLayout(context).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            )
+            clipChildren = false
+            clipToPadding = false
+            isClickable = false
+            isFocusable = false
+            isFocusableInTouchMode = false
+        }
 
         val container = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -505,12 +704,116 @@ class FloatingStatusService : Service() {
         container.addView(tv)
         container.addView(btn)
 
-        container.setOnTouchListener { _, ev ->
+        val panelW = toolboxWidthPx()
+        val panel = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = FrameLayout.LayoutParams(panelW, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            }
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#CC0B0F16"))
+                cornerRadius = dp(16).toFloat()
+            }
+            isClickable = true
+            isFocusable = false
+            isFocusableInTouchMode = false
+        }
+
+        val preview = ImageView(context).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            adjustViewBounds = true
+            setBackgroundColor(Color.parseColor("#22000000"))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(260)
+            )
+        }
+
+        val row = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(10) }
+        }
+
+        val btnToMain = ImageButton(context).apply {
+            setImageResource(android.R.drawable.ic_menu_view)
+            setBackgroundColor(Color.TRANSPARENT)
+            setOnClickListener {
+                workerScope.launch {
+                    try {
+                        switchVirtualTopAppToMainDisplayBestEffort()
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+            layoutParams = LinearLayout.LayoutParams(dp(36), dp(36))
+        }
+
+        val btnClose = ImageButton(context).apply {
+            setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
+            setBackgroundColor(Color.TRANSPARENT)
+            setOnClickListener {
+                setToolboxExpanded(false, animate = true)
+            }
+            layoutParams = LinearLayout.LayoutParams(dp(36), dp(36)).apply { leftMargin = dp(8) }
+        }
+
+        row.addView(btnToMain)
+        row.addView(btnClose)
+
+        panel.addView(preview)
+        panel.addView(row)
+
+        toolboxPanelView = panel
+        toolboxPreviewView = preview
+        toolboxCloseButtonView = btnClose
+        toolboxToMainButtonView = btnToMain
+
+        toolboxHandleView = container
+
+        root.addView(panel)
+        root.addView(container, FrameLayout.LayoutParams(barWidth, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            gravity = if (dockOnRight) (Gravity.END or Gravity.CENTER_VERTICAL) else (Gravity.START or Gravity.CENTER_VERTICAL)
+        })
+
+        panel.translationX = if (dockOnRight) panelW.toFloat() else (-panelW).toFloat()
+        toolboxExpanded = false
+
+        root.setOnTouchListener { _, ev ->
             val lp = barLayoutParams
             val wm = windowManager
             val bar = barView
             val stopBtn = stopButtonView
-            if (lp == null || wm == null || bar == null || stopBtn == null) return@setOnTouchListener false
+            val panelV = toolboxPanelView
+            if (lp == null || wm == null || bar == null || stopBtn == null || panelV == null) return@setOnTouchListener false
+
+            fun setOverlayWidth(widthPx: Int) {
+                if (lp.width == widthPx) return
+                lp.width = widthPx
+                try {
+                    wm.updateViewLayout(bar, lp)
+                } catch (_: Exception) {
+                }
+            }
+
+            val expandedOverlayWidth = handleWidthPx() + toolboxWidthPx()
+            val collapsedOverlayWidth = handleWidthPx()
+
+            fun clampDragPosition(lpToClamp: WindowManager.LayoutParams, expandedW: Int, handleW: Int, barHeightPx: Int) {
+                val sw = screenWidthPx().coerceAtLeast(1)
+                val sh = screenHeightPx().coerceAtLeast(1)
+
+                val minX = (-(expandedW - handleW)).coerceAtMost(0)
+                val maxX = (sw - handleW).coerceAtLeast(0)
+                lpToClamp.x = lpToClamp.x.coerceIn(minX, maxX)
+
+                val maxY = ((sh - barHeightPx) / 2).coerceAtLeast(0)
+                lpToClamp.y = lpToClamp.y.coerceIn(-maxY, maxY)
+            }
 
             fun isInStopButton(e: MotionEvent): Boolean {
                 val x = e.x.toInt()
@@ -522,11 +825,15 @@ class FloatingStatusService : Service() {
                 MotionEvent.ACTION_DOWN -> {
                     if (isInStopButton(ev)) return@setOnTouchListener false
                     dragging = false
+                    swipingToolbox = false
                     longPressActive = false
                     dragDownRawX = ev.rawX
                     dragDownRawY = ev.rawY
                     dragDownLpX = lp.x
                     dragDownLpY = lp.y
+
+                    swipeDownRawX = ev.rawX
+                    swipeProgress = if (toolboxExpanded) 1f else 0f
 
                     longPressRunnable?.let { mainHandler.removeCallbacks(it) }
                     val r = Runnable {
@@ -543,23 +850,59 @@ class FloatingStatusService : Service() {
                 MotionEvent.ACTION_MOVE -> {
                     val dx = (ev.rawX - dragDownRawX).toInt()
                     val dy = (ev.rawY - dragDownRawY).toInt()
+
+                    if (!dragging && !longPressActive) {
+                        val absDx = kotlin.math.abs(dx)
+                        val absDy = kotlin.math.abs(dy)
+                        if (absDx > touchSlopPx && absDx > absDy) {
+                            val rawDx = (ev.rawX - dragDownRawX)
+                            val directionOk = if (toolboxExpanded) {
+                                if (dockOnRight) rawDx > 0f else rawDx < 0f
+                            } else {
+                                if (dockOnRight) rawDx < 0f else rawDx > 0f
+                            }
+
+                            if (directionOk) {
+                                setOverlayWidth(expandedOverlayWidth)
+                                swipingToolbox = true
+                            } else {
+                                return@setOnTouchListener true
+                            }
+                        }
+                    }
+
+                    if (swipingToolbox) {
+                        longPressRunnable?.let { mainHandler.removeCallbacks(it) }
+                        longPressRunnable = null
+
+                        val w = toolboxWidthPx().toFloat().coerceAtLeast(1f)
+                        val delta = (ev.rawX - swipeDownRawX)
+                        val progressDelta = if (dockOnRight) (-delta / w) else (delta / w)
+                        swipeProgress = (swipeProgress + progressDelta).coerceIn(0f, 1f)
+                        swipeDownRawX = ev.rawX
+
+                        val hiddenTx = if (dockOnRight) w else -w
+                        panelV.translationX = hiddenTx * (1f - swipeProgress)
+                        return@setOnTouchListener true
+                    }
+
                     if (!dragging) {
+                        if (!longPressActive) {
+                            // Dragging is only enabled after long-press to reduce mis-detection.
+                            return@setOnTouchListener true
+                        }
                         if (kotlin.math.abs(dx) < touchSlopPx && kotlin.math.abs(dy) < touchSlopPx) {
                             return@setOnTouchListener true
                         }
                         dragging = true
                         longPressRunnable?.let { mainHandler.removeCallbacks(it) }
-                        if (!longPressActive) {
-                            longPressActive = true
-                            setDragHighlight(true)
-                        }
                     }
 
-                    val barW = bar.width.takeIf { it > 0 } ?: dp(30)
+                    val barW = bar.width.takeIf { it > 0 } ?: collapsedOverlayWidth
                     val barH = bar.height.takeIf { it > 0 } ?: dp(120)
                     lp.x = dragDownLpX + dx
                     lp.y = dragDownLpY + dy
-                    clampOverlayPosition(lp, barW, barH)
+                    clampDragPosition(lp, collapsedOverlayWidth, collapsedOverlayWidth, barH)
                     try {
                         wm.updateViewLayout(bar, lp)
                     } catch (_: Exception) {
@@ -572,16 +915,27 @@ class FloatingStatusService : Service() {
                     longPressRunnable?.let { mainHandler.removeCallbacks(it) }
                     longPressRunnable = null
 
+                    if (swipingToolbox) {
+                        swipingToolbox = false
+                        val expand = swipeProgress >= 0.5f
+                        setToolboxExpanded(expand, animate = true)
+                        return@setOnTouchListener true
+                    }
+
                     if (dragging || longPressActive) {
-                        val barW = bar.width.takeIf { it > 0 } ?: dp(30)
+                        val barW = bar.width.takeIf { it > 0 } ?: (if (toolboxExpanded) (handleWidthPx() + toolboxWidthPx()) else handleWidthPx())
                         val barH = bar.height.takeIf { it > 0 } ?: dp(120)
-                        clampOverlayPosition(lp, barW, barH)
-                        snapToEdge(lp, barW)
+                        clampDragPosition(lp, expandedOverlayWidth, collapsedOverlayWidth, barH)
+                        snapToolboxToEdge(lp)
                         try {
                             wm.updateViewLayout(bar, lp)
                         } catch (_: Exception) {
                         }
                         updateSummaryBubblePositionIfNeeded()
+                    }
+
+                    if (!toolboxExpanded) {
+                        setOverlayWidth(collapsedOverlayWidth)
                     }
 
                     if (longPressActive) {
@@ -609,31 +963,33 @@ class FloatingStatusService : Service() {
         }
 
         val barParams = WindowManager.LayoutParams(
-            barWidth,
+            handleWidthPx(),
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
-                WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM or
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                 WindowManager.LayoutParams.FLAG_SECURE,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            x = if (dockOnRight) (resources.displayMetrics.widthPixels - barWidth).coerceAtLeast(0) else 0
-            y = 0
+            gravity = if (dockOnRight) (Gravity.END or Gravity.CENTER_VERTICAL) else (Gravity.START or Gravity.CENTER_VERTICAL)
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_UNCHANGED
             if (Build.VERSION.SDK_INT >= 28) {
                 layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
         }
 
-        windowManager?.addView(container, barParams)
-        container.translationX = if (dockOnRight) barWidth.toFloat() else (-barWidth).toFloat()
+        windowManager?.addView(root, barParams)
+        root.translationX = if (dockOnRight) barWidth.toFloat() else (-barWidth).toFloat()
 
-        barView = container
+        snapToolboxToEdge(barParams)
+        try {
+            windowManager?.updateViewLayout(root, barParams)
+        } catch (_: Exception) {
+        }
+
+        barView = root
         statusTextView = tv
         stopButtonView = btn
         barLayoutParams = barParams
@@ -647,11 +1003,10 @@ class FloatingStatusService : Service() {
         val lp = barLayoutParams
         if (bar == null || lp == null) return
 
-        val barW = bar.width.takeIf { it > 0 } ?: dp(30)
+        val barW = bar.width.takeIf { it > 0 } ?: (if (toolboxExpanded) (handleWidthPx() + toolboxWidthPx()) else handleWidthPx())
         val barH = bar.height.takeIf { it > 0 } ?: dp(120)
         clampOverlayPosition(lp, barW, barH)
-        snapToEdge(lp, barW)
-        applyDockBackground(dockOnRight)
+        snapToolboxToEdge(lp)
         try {
             wm.updateViewLayout(bar, lp)
         } catch (_: Exception) {
@@ -678,7 +1033,7 @@ class FloatingStatusService : Service() {
     private fun showIfNeeded() {
         if (isShowing) return
         val bar = barView ?: return
-        val w = bar.width.takeIf { it > 0 } ?: dp(30)
+        val w = handleWidthPx()
         isShowing = true
         bar.animate().cancel()
         bar.translationX = if (dockOnRight) w.toFloat() else (-w).toFloat()
@@ -698,7 +1053,7 @@ class FloatingStatusService : Service() {
             stopSelf()
             return
         }
-        val w = bar.width.takeIf { it > 0 } ?: dp(30)
+        val w = handleWidthPx()
         bar.animate().cancel()
         bar.animate()
             .translationX(if (dockOnRight) w.toFloat() else (-w).toFloat())
@@ -733,6 +1088,10 @@ class FloatingStatusService : Service() {
         barView = null
         statusTextView = null
         stopButtonView = null
+        toolboxPanelView = null
+        toolboxPreviewView = null
+        toolboxCloseButtonView = null
+        toolboxToMainButtonView = null
         barLayoutParams = null
         tempFocusableEnabled = false
         isShowing = false
@@ -877,6 +1236,26 @@ class FloatingStatusService : Service() {
     private fun applyBubbleBackground(bg: GradientDrawable, dockRight: Boolean) {
         val r = dp(14).toFloat()
         bg.cornerRadius = r
+    }
+
+    private fun applyDockBackground(dockRight: Boolean) {
+        val bg = barBackgroundDrawable ?: return
+        val r = dp(14).toFloat()
+        bg.cornerRadii = if (dockRight) {
+            floatArrayOf(
+                r, r,
+                0f, 0f,
+                0f, 0f,
+                r, r,
+            )
+        } else {
+            floatArrayOf(
+                0f, 0f,
+                r, r,
+                r, r,
+                0f, 0f,
+            )
+        }
     }
 
     private enum class OverlayMicAction {
