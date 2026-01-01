@@ -49,6 +49,7 @@ class SettingsActivity : ComponentActivity() {
         val etBaseUrl = findViewById<EditText>(R.id.etBaseUrl)
         val etApiKey = findViewById<EditText>(R.id.etApiKey)
         val etModelName = findViewById<EditText>(R.id.etModelName)
+        val etVirtualDisplayDpi = findViewById<EditText>(R.id.etVirtualDisplayDpi)
         val rgExecEnv = findViewById<RadioGroup>(R.id.rgExecutionEnvironment)
         val rbExecEnvMain = findViewById<RadioButton>(R.id.rbExecEnvMain)
         val rbExecEnvVirtual = findViewById<RadioButton>(R.id.rbExecEnvVirtual)
@@ -58,6 +59,7 @@ class SettingsActivity : ComponentActivity() {
         etBaseUrl.setText(config.baseUrl)
         etApiKey.setText(config.apiKey)
         etModelName.setText(config.modelName)
+        etVirtualDisplayDpi.setText(configManager.getVirtualDisplayDpi().toString())
 
         val execEnv = configManager.getExecutionEnvironment()
         if (execEnv == ConfigManager.EXEC_ENV_VIRTUAL) {
@@ -73,6 +75,11 @@ class SettingsActivity : ComponentActivity() {
                 modelName = etModelName.text?.toString().orEmpty(),
             )
             configManager.setConfig(newConfig)
+
+            val newDpi = etVirtualDisplayDpi.text?.toString().orEmpty().trim().toIntOrNull()
+                ?.takeIf { it in 72..640 }
+                ?: ConfigManager.DEFAULT_VIRTUAL_DISPLAY_DPI
+            configManager.setVirtualDisplayDpi(newDpi)
 
             val selected = rgExecEnv.checkedRadioButtonId
             val newExecEnv = if (selected == R.id.rbExecEnvVirtual) {

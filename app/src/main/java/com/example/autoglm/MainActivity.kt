@@ -723,276 +723,287 @@ private fun CalibrationScreen(
     Box(modifier = modifier) {
         FullscreenVignette(modifier = Modifier.fillMaxSize()) {
             Box(modifier = Modifier.fillMaxSize().padding(18.dp)) {
+                val topScroll = rememberScrollState()
+                val logScroll = rememberScrollState()
+                val logText = buildString {
+                    if (autoMessage.isNotBlank()) {
+                        append("[ADB] ")
+                        append(autoMessage)
+                        append('\n')
+                    }
+                    if (apiAvailable == false) {
+                        if (apiLastSummary.isNotBlank()) {
+                            append("[API] ")
+                            append(apiLastSummary)
+                            append('\n')
+                        }
+                        if (showApiRaw && apiLastText.isNotBlank()) {
+                            append("\n[详情]\n")
+                            append(apiLastText)
+                        }
+                    }
+                }.trim()
+
                 Column(
                     modifier = Modifier
-                        .fillMaxWidth()
+                        .fillMaxSize()
                         .align(Alignment.Center),
-                    verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Text(
-                        text = "机体权限校准",
-                        color = Color.White.copy(alpha = 0.92f),
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text(
-                        text = "执行链路就绪检测与权限注入",
-                        color = Color.White.copy(alpha = 0.6f),
-                        fontFamily = FontFamily.Monospace,
-                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(0.8f)
+                            .verticalScroll(topScroll),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(
+                            text = "机体权限校准",
+                            color = Color.White.copy(alpha = 0.92f),
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "执行链路就绪检测与权限注入",
+                            color = Color.White.copy(alpha = 0.6f),
+                            fontFamily = FontFamily.Monospace,
+                        )
 
-                    Spacer(modifier = Modifier.height(18.dp))
-                    VisualStatusLine(
-                        label = "悬浮窗权限",
-                        ready = hasOverlayPermission,
-                        readyText = "ACTIVE",
-                        pendingText = "PENDING",
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    VisualStatusLine(
-                        label = "电池策略",
-                        ready = hasBatteryWhitelist,
-                        readyText = "STABLE",
-                        pendingText = "RESTRICTED",
-                    )
+                        Spacer(modifier = Modifier.height(18.dp))
+                        VisualStatusLine(
+                            label = "悬浮窗权限",
+                            ready = hasOverlayPermission,
+                            readyText = "ACTIVE",
+                            pendingText = "PENDING",
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        VisualStatusLine(
+                            label = "电池策略",
+                            ready = hasBatteryWhitelist,
+                            readyText = "STABLE",
+                            pendingText = "RESTRICTED",
+                        )
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                        Spacer(modifier = Modifier.height(16.dp))
 
-                    Text(
-                        text = "连接模式",
-                        color = Color.White.copy(alpha = 0.72f),
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "连接模式",
+                            color = Color.White.copy(alpha = 0.72f),
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
 
-                    GlassPanel(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
-                        Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
-                            VisualStatusLine(
-                                label = "当前模式",
-                                ready = true,
-                                readyText = if (adbMode == ConfigManager.ADB_MODE_SHIZUKU) "SHIZUKU" else "WIRELESS",
-                                pendingText = "",
-                            )
+                        GlassPanel(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+                            Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
+                                VisualStatusLine(
+                                    label = "当前模式",
+                                    ready = true,
+                                    readyText = if (adbMode == ConfigManager.ADB_MODE_SHIZUKU) "SHIZUKU" else "WIRELESS",
+                                    pendingText = "",
+                                )
 
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            GradientGlowButton(
-                                onClick = {
-                                    adbMode = ConfigManager.ADB_MODE_WIRELESS_DEBUG
-                                    try {
-                                        config.setAdbConnectMode(adbMode)
-                                    } catch (_: Exception) {
-                                    }
-                                    shizukuLastMessage = ""
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                                enabled = adbMode != ConfigManager.ADB_MODE_WIRELESS_DEBUG,
-                            ) {
-                                Text("无线调试模式（自动连接历史 ADB）")
-                            }
-
-                            if (adbMode == ConfigManager.ADB_MODE_WIRELESS_DEBUG) {
                                 Spacer(modifier = Modifier.height(12.dp))
+
                                 GradientGlowButton(
                                     onClick = {
+                                        adbMode = ConfigManager.ADB_MODE_WIRELESS_DEBUG
                                         try {
-                                            PairingService.startPairingNotification(context.applicationContext, "")
+                                            config.setAdbConnectMode(adbMode)
                                         } catch (_: Exception) {
                                         }
-                                        startWirelessDebuggingSettings(context)
+                                        shizukuLastMessage = ""
                                     },
                                     modifier = Modifier.fillMaxWidth(),
+                                    enabled = adbMode != ConfigManager.ADB_MODE_WIRELESS_DEBUG,
                                 ) {
-                                    Text("申请无线调试配对")
+                                    Text("无线调试模式（自动连接历史 ADB）")
                                 }
-                            }
 
-                            Spacer(modifier = Modifier.height(10.dp))
-
-                            GradientGlowButton(
-                                onClick = {
-                                    adbMode = ConfigManager.ADB_MODE_SHIZUKU
-                                    try {
-                                        config.setAdbConnectMode(adbMode)
-                                    } catch (_: Exception) {
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                                enabled = adbMode != ConfigManager.ADB_MODE_SHIZUKU,
-                            ) {
-                                Text("Shizuku 模式（授权后连接）")
-                            }
-
-                            if (adbMode == ConfigManager.ADB_MODE_SHIZUKU) {
-                                Spacer(modifier = Modifier.height(14.dp))
-                                VisualStatusLine(
-                                    label = "Shizuku Binder",
-                                    ready = shizukuBinderReady,
-                                    readyText = "READY",
-                                    pendingText = "OFFLINE",
-                                )
-                                Spacer(modifier = Modifier.height(10.dp))
-                                VisualStatusLine(
-                                    label = "Shizuku 授权",
-                                    ready = shizukuGranted,
-                                    readyText = "GRANTED",
-                                    pendingText = "NEEDED",
-                                )
-
-                                if (!shizukuGranted) {
+                                if (adbMode == ConfigManager.ADB_MODE_WIRELESS_DEBUG) {
                                     Spacer(modifier = Modifier.height(12.dp))
                                     GradientGlowButton(
                                         onClick = {
                                             try {
-                                                if (!Shizuku.pingBinder()) {
-                                                    shizukuLastMessage = "未检测到 Shizuku 服务：请先安装/启用 Shizuku 并启动服务"
-                                                    return@GradientGlowButton
-                                                }
-                                                Shizuku.requestPermission(SHIZUKU_REQUEST_CODE)
-                                            } catch (t: Throwable) {
-                                                shizukuLastMessage = "请求 Shizuku 授权失败：${t.message}"
+                                                PairingService.startPairingNotification(context.applicationContext, "")
+                                            } catch (_: Exception) {
                                             }
+                                            startWirelessDebuggingSettings(context)
                                         },
                                         modifier = Modifier.fillMaxWidth(),
-                                        enabled = shizukuBinderReady,
                                     ) {
-                                        Text(if (shizukuBinderReady) "申请 Shizuku 授权" else "等待 Shizuku 就绪")
+                                        Text("申请无线调试配对")
                                     }
                                 }
 
-                                if (shizukuLastMessage.isNotBlank()) {
-                                    Spacer(modifier = Modifier.height(10.dp))
-                                    Text(
-                                        text = shizukuLastMessage,
-                                        color = Color.White.copy(alpha = 0.55f),
-                                        fontFamily = FontFamily.Monospace,
-                                    )
-                                }
-                            }
-                        }
-                    }
+                                Spacer(modifier = Modifier.height(10.dp))
 
-                    Text(
-                        text = if (hasNotificationPermission) "通知权限已就绪" else "需要通知权限：用于配对码/状态通知",
-                        color = Color.White.copy(alpha = 0.55f),
-                        fontFamily = FontFamily.Monospace,
-                    )
-
-                    GradientGlowButton(
-                        onClick = {
-                            if (Build.VERSION.SDK_INT >= 33) {
-                                requestNotificationsLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !hasNotificationPermission
-                    ) {
-                        Text(if (hasNotificationPermission) "通知权限已就绪" else "申请通知权限")
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    VisualStatusLine(
-                        label = if (adbMode == ConfigManager.ADB_MODE_SHIZUKU) "Shizuku 授权" else "无线调试 ADB",
-                        ready = connectMethodOk,
-                        readyText = "READY",
-                        pendingText = "WAITING",
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    VisualStatusLine(
-                        label = "API 自检",
-                        ready = apiOk,
-                        readyText = "PASS",
-                        pendingText = "UNKNOWN",
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    GradientGlowButton(
-                        onClick = {
-                            try {
-                                context.startActivity(
-                                    Intent(context, SettingsActivity::class.java).apply {
-                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    }
-                                )
-                            } catch (_: Exception) {
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("API 设置")
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    GradientGlowButton(
-                        onClick = {
-                            if (apiTesting) return@GradientGlowButton
-                            scope.launch {
-                                runApiAvailabilityTest()
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !apiTesting,
-                    ) {
-                        Text(if (apiTesting) "测试中..." else "测试 API 连接")
-                    }
-
-                    Spacer(modifier = Modifier.height(18.dp))
-
-                    val logMaxHeight = (configuration.screenHeightDp * 0.28f).dp
-                    val logScroll = rememberScrollState()
-                    val logText = buildString {
-                        if (autoMessage.isNotBlank()) {
-                            append("[ADB] ")
-                            append(autoMessage)
-                            append('\n')
-                        }
-                        if (apiAvailable == false) {
-                            if (apiLastSummary.isNotBlank()) {
-                                append("[API] ")
-                                append(apiLastSummary)
-                                append('\n')
-                            }
-                            if (showApiRaw && apiLastText.isNotBlank()) {
-                                append("\n[详情]\n")
-                                append(apiLastText)
-                            }
-                        }
-                    }.trim()
-
-                    if (logText.isNotBlank()) {
-                        GlassPanel(modifier = Modifier.fillMaxWidth()) {
-                            SelectionContainer {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(min = 84.dp, max = logMaxHeight)
-                                        .verticalScroll(logScroll)
-                                        .padding(12.dp),
+                                GradientGlowButton(
+                                    onClick = {
+                                        adbMode = ConfigManager.ADB_MODE_SHIZUKU
+                                        try {
+                                            config.setAdbConnectMode(adbMode)
+                                        } catch (_: Exception) {
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    enabled = adbMode != ConfigManager.ADB_MODE_SHIZUKU,
                                 ) {
-                                    if (apiAvailable == false && apiLastText.isNotBlank()) {
+                                    Text("Shizuku 模式（授权后连接）")
+                                }
+
+                                if (adbMode == ConfigManager.ADB_MODE_SHIZUKU) {
+                                    Spacer(modifier = Modifier.height(14.dp))
+                                    VisualStatusLine(
+                                        label = "Shizuku Binder",
+                                        ready = shizukuBinderReady,
+                                        readyText = "READY",
+                                        pendingText = "OFFLINE",
+                                    )
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    VisualStatusLine(
+                                        label = "Shizuku 授权",
+                                        ready = shizukuGranted,
+                                        readyText = "GRANTED",
+                                        pendingText = "NEEDED",
+                                    )
+
+                                    if (!shizukuGranted) {
+                                        Spacer(modifier = Modifier.height(12.dp))
                                         GradientGlowButton(
                                             onClick = {
-                                                showApiRaw = !showApiRaw
+                                                try {
+                                                    if (!Shizuku.pingBinder()) {
+                                                        shizukuLastMessage = "未检测到 Shizuku 服务：请先安装/启用 Shizuku 并启动服务"
+                                                        return@GradientGlowButton
+                                                    }
+                                                    Shizuku.requestPermission(SHIZUKU_REQUEST_CODE)
+                                                } catch (t: Throwable) {
+                                                    shizukuLastMessage = "请求 Shizuku 授权失败：${t.message}"
+                                                }
                                             },
                                             modifier = Modifier.fillMaxWidth(),
+                                            enabled = shizukuBinderReady,
                                         ) {
-                                            Text(if (showApiRaw) "隐藏 API 详情" else "显示 API 详情")
+                                            Text(if (shizukuBinderReady) "申请 Shizuku 授权" else "等待 Shizuku 就绪")
                                         }
-                                        Spacer(modifier = Modifier.height(10.dp))
                                     }
-                                    Text(
-                                        text = logText,
-                                        color = Color.White.copy(alpha = 0.55f),
-                                        fontFamily = FontFamily.Monospace,
+
+                                    if (shizukuLastMessage.isNotBlank()) {
+                                        Spacer(modifier = Modifier.height(10.dp))
+                                        Text(
+                                            text = shizukuLastMessage,
+                                            color = Color.White.copy(alpha = 0.55f),
+                                            fontFamily = FontFamily.Monospace,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        Text(
+                            text = if (hasNotificationPermission) "通知权限已就绪" else "需要通知权限：用于配对码/状态通知",
+                            color = Color.White.copy(alpha = 0.55f),
+                            fontFamily = FontFamily.Monospace,
+                        )
+
+                        GradientGlowButton(
+                            onClick = {
+                                if (Build.VERSION.SDK_INT >= 33) {
+                                    requestNotificationsLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !hasNotificationPermission
+                        ) {
+                            Text(if (hasNotificationPermission) "通知权限已就绪" else "申请通知权限")
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        VisualStatusLine(
+                            label = if (adbMode == ConfigManager.ADB_MODE_SHIZUKU) "Shizuku 授权" else "无线调试 ADB",
+                            ready = connectMethodOk,
+                            readyText = "READY",
+                            pendingText = "WAITING",
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        VisualStatusLine(
+                            label = "API 自检",
+                            ready = apiOk,
+                            readyText = "PASS",
+                            pendingText = "UNKNOWN",
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        GradientGlowButton(
+                            onClick = {
+                                try {
+                                    context.startActivity(
+                                        Intent(context, SettingsActivity::class.java).apply {
+                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        }
                                     )
+                                } catch (_: Exception) {
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("API 设置")
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        GradientGlowButton(
+                            onClick = {
+                                if (apiTesting) return@GradientGlowButton
+                                scope.launch {
+                                    runApiAvailabilityTest()
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !apiTesting,
+                        ) {
+                            Text(if (apiTesting) "测试中..." else "测试 API 连接")
+                        }
+
+                        Spacer(modifier = Modifier.height(18.dp))
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(0.2f)
+                    ) {
+                        if (logText.isNotBlank()) {
+                            GlassPanel(modifier = Modifier.fillMaxSize()) {
+                                SelectionContainer {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .verticalScroll(logScroll)
+                                            .padding(12.dp),
+                                    ) {
+                                        if (apiAvailable == false && apiLastText.isNotBlank()) {
+                                            GradientGlowButton(
+                                                onClick = {
+                                                    showApiRaw = !showApiRaw
+                                                },
+                                                modifier = Modifier.fillMaxWidth(),
+                                            ) {
+                                                Text(if (showApiRaw) "隐藏 API 详情" else "显示 API 详情")
+                                            }
+                                            Spacer(modifier = Modifier.height(10.dp))
+                                        }
+                                        Text(
+                                            text = logText,
+                                            color = Color.White.copy(alpha = 0.55f),
+                                            fontFamily = FontFamily.Monospace,
+                                        )
+                                    }
                                 }
                             }
                         }

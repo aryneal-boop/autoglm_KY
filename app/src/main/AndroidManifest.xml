@@ -46,7 +46,9 @@
 
         <activity
             android:name=".WelcomeActivity"
-            android:exported="false"
+            android:exported="true"
+            android:taskAffinity="${applicationId}.virtual"
+            android:excludeFromRecents="true"
             android:theme="@style/Theme.Autoglm" />
 
         <activity

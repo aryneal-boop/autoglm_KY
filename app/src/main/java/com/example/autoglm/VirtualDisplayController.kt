@@ -60,7 +60,11 @@ object VirtualDisplayController {
         // 480P 分辨率必须做 16 对齐，避免部分硬件/驱动在 stride/padding 上出现花屏。
         val vdW = if (isLandscape) 848 else 480
         val vdH = if (isLandscape) 480 else 848
-        val vdDpi = if (vdW == 480 || vdH == 480) 142 else 440
+        val vdDpi = try {
+            ConfigManager(context).getVirtualDisplayDpi().takeIf { it in 72..640 } ?: ConfigManager.DEFAULT_VIRTUAL_DISPLAY_DPI
+        } catch (_: Exception) {
+            ConfigManager.DEFAULT_VIRTUAL_DISPLAY_DPI
+        }
 
         // Shizuku VirtualDisplay: strictly follow ReadVirtualDisplay.md principle.
         val r = ShizukuVirtualDisplayEngine.ensureStarted(
@@ -255,6 +259,7 @@ object VirtualDisplayController {
                 val component = "${appContext.packageName}/.WelcomeActivity"
                 val flags = 0x10000000
                 val candidates = listOf(
+                    "cmd activity start-activity --user 0 --display $displayId --windowingMode 1 -n $component -f $flags",
                     "cmd activity start-activity --user 0 --display $displayId -n $component -f $flags",
                     "am start --user 0 --display $displayId -n $component -f $flags",
                     "am start --display $displayId -n $component -f $flags",

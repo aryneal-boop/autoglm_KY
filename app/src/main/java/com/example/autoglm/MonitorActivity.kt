@@ -194,6 +194,8 @@ class MonitorActivity : ComponentActivity() {
 
                 val flags = 0x10000000
                 val candidates = listOf(
+                    "cmd activity start-activity --user 0 --display $displayId --windowingMode 1 --activity-reorder-to-front -n ${entry.component} -f $flags",
+                    "cmd activity start-activity --user 0 --display $displayId --windowingMode 1 -n ${entry.component} -f $flags",
                     "cmd activity start-activity --user 0 --display $displayId --activity-reorder-to-front -n ${entry.component} -f $flags",
                     "cmd activity start-activity --user 0 --display $displayId -n ${entry.component} -f $flags",
                     "am start --user 0 -n ${entry.component} --display $displayId --activity-reorder-to-front -f $flags",

@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -21,6 +22,7 @@ import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.SurfaceTexture
 import android.graphics.Shader
 import android.graphics.drawable.GradientDrawable
 import android.media.AudioFormat
@@ -32,14 +34,15 @@ import android.os.Handler
 import android.os.Build
 import android.os.IBinder
 import android.os.Looper
+import android.os.HandlerThread
 import android.provider.Settings
 import android.util.Base64
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.Surface
-import android.graphics.SurfaceTexture
 import android.view.TextureView
 import android.view.View
 import android.view.ViewConfiguration
@@ -87,7 +90,9 @@ class FloatingStatusService : Service() {
     private var toolboxPanelView: View? = null
     private var toolboxPreviewView: ImageView? = null
     private var toolboxPreviewTextureView: TextureView? = null
-    private var toolboxPreviewWrapView: View? = null
+    private var toolboxPreviewWrapView: FrameLayout? = null
+    private var toolboxPreviewTouchLayerView: View? = null
+    private var toolboxPreviewLocalIndicatorView: View? = null
     private var toolboxModeTextView: TextView? = null
     private var toolboxCloseButtonView: View? = null
     private var toolboxToMainButtonView: View? = null
@@ -171,12 +176,61 @@ class FloatingStatusService : Service() {
 
     private var isShowing = false
 
-    private fun screenWidthPx(): Int = resources.displayMetrics.widthPixels
-    private fun screenHeightPx(): Int = resources.displayMetrics.heightPixels
+    @Volatile
+    private var lastDiagLogAtMs: Long = 0L
+
+    private fun diag(event: String) {
+        val now = android.os.SystemClock.uptimeMillis()
+        val last = lastDiagLogAtMs
+        if (last > 0L && now - last < 700L) return
+        lastDiagLogAtMs = now
+
+        val md = runCatching { mainDisplayMetrics() }.getOrNull()
+        val rd = runCatching { resources.displayMetrics }.getOrNull()
+
+        val barH = barView?.height ?: -1
+        val panelH = toolboxPanelView?.height ?: -1
+        val tvH = statusTextView?.height ?: -1
+
+        val blp = barLayoutParams
+        val tlp = toolboxLayoutParams
+
+        Log.i(
+            TAG,
+            "diag[$event] mainDensity=${md?.density} resDensity=${rd?.density} barH=$barH panelH=$panelH tvH=$tvH " +
+                "barLp=${blp?.width}x${blp?.height}@(${blp?.x},${blp?.y}) " +
+                "toolLp=${tlp?.width}x${tlp?.height}@(${tlp?.x},${tlp?.y})"
+        )
+    }
+
+    private fun mainDisplayContext(): Context = runCatching {
+        val dm = getSystemService(Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
+        val d0 = dm.getDisplay(0) ?: return@runCatching this as Context
+        createDisplayContext(d0)
+    }.getOrElse {
+        this
+    }
+
+    private fun mainDisplayMetrics() = runCatching {
+        mainDisplayContext().resources.displayMetrics
+    }.getOrElse {
+        resources.displayMetrics
+    }
+
+    private fun screenWidthPx(): Int = mainDisplayMetrics().widthPixels
+    private fun screenHeightPx(): Int = mainDisplayMetrics().heightPixels
 
     private fun handleWidthPx(): Int = dp(30)
 
     private fun toolboxWidthPx(): Int = dp(260)
+
+    private fun toolboxWindowHeightPx(): Int {
+        val maxH = (screenHeightPx() - dp(80)).coerceAtLeast(dp(240))
+        val previewH = (toolboxPreviewWrapView?.layoutParams?.height ?: 0).takeIf { it > 0 } ?: dp(260)
+        // panel padding: top+bottom(10+10) + row topMargin(10) + safe row height
+        val desired = previewH + dp(10) + dp(10) + dp(10) + dp(72)
+        return desired.coerceIn(dp(240), maxH)
+    }
 
     private fun snapToolboxToEdge(lp: WindowManager.LayoutParams) {
         val handleW = handleWidthPx()
@@ -236,7 +290,267 @@ class FloatingStatusService : Service() {
         }
     }
 
+    private data class VirtualTouchCmd(
+        val displayId: Int,
+        val downTime: Long,
+        val eventTime: Long,
+        val action: Int,
+        val x: Int,
+        val y: Int,
+        val ensureFocus: Boolean,
+    )
+
+    @Volatile
+    private var inputInjectionThread: HandlerThread? = null
+
+    @Volatile
+    private var inputInjectionHandler: Handler? = null
+
+    @Volatile
+    private var inputInjectLastLogMs: Long = 0L
+
+    private fun ensureInputInjectionThreadStarted() {
+        if (inputInjectionHandler != null) return
+        val t = HandlerThread("InputInjectionThread")
+        t.start()
+        inputInjectionThread = t
+        inputInjectionHandler = Handler(t.looper) { msg ->
+            val cmd = msg.obj as? VirtualTouchCmd
+            if (cmd != null) {
+                runCatching { handleVirtualTouchCmd(cmd) }
+            }
+            true
+        }
+    }
+
+    private fun enqueueVirtualTouchCmd(cmd: VirtualTouchCmd) {
+        ensureInputInjectionThreadStarted()
+        val h = inputInjectionHandler ?: return
+
+        val MSG_MOVE = 2
+        val MSG_OTHER = 1
+
+        val what = if (cmd.action == MotionEvent.ACTION_MOVE) MSG_MOVE else MSG_OTHER
+        val msg = h.obtainMessage(what, cmd)
+
+        // Conflate MOVE: keep only the latest MOVE.
+        if (what == MSG_MOVE) {
+            h.removeMessages(MSG_MOVE)
+            h.sendMessage(msg)
+        } else {
+            // DOWN/UP/CANCEL should be delivered ASAP.
+            h.sendMessageAtFrontOfQueue(msg)
+        }
+    }
+
+    private fun handleVirtualTouchCmd(cmd: VirtualTouchCmd) {
+        val startNs = System.nanoTime()
+        injectVirtualSingleTouchBestEffort(
+            displayId = cmd.displayId,
+            downTime = cmd.downTime,
+            eventTime = cmd.eventTime,
+            action = cmd.action,
+            x = cmd.x,
+            y = cmd.y,
+            ensureFocus = cmd.ensureFocus,
+        )
+        val endNs = System.nanoTime()
+
+        val nowMs = android.os.SystemClock.uptimeMillis()
+        if (nowMs - inputInjectLastLogMs >= 1000L) {
+            inputInjectLastLogMs = nowMs
+            val injectMs = (endNs - startNs) / 1_000_000.0
+            Log.i("InputInject", "inject: action=${cmd.action} ms=$injectMs display=${cmd.displayId} xy=${cmd.x},${cmd.y}")
+        }
+    }
+
+    private fun injectVirtualTapFromToolboxPreviewBestEffort(viewX: Float, viewY: Float) {
+        if (!isVirtualIsolatedMode()) return
+        val did = VirtualDisplayController.getDisplayId() ?: return
+        if (did <= 0) return
+        if (!ShizukuBridge.pingBinder() || !ShizukuBridge.hasPermission()) return
+
+        val wrap = toolboxPreviewWrapView ?: return
+        val vw = wrap.width
+        val vh = wrap.height
+        if (vw <= 0 || vh <= 0) return
+
+        val size = runCatching { com.example.autoglm.vdiso.ShizukuVirtualDisplayEngine.getLatestContentSize() }.getOrNull()
+        val cw = size?.first?.takeIf { it > 0 } ?: 848
+        val ch = size?.second?.takeIf { it > 0 } ?: 480
+
+        val nx = (viewX / vw.toFloat()).coerceIn(0f, 1f)
+        val ny = (viewY / vh.toFloat()).coerceIn(0f, 1f)
+        val tx = (nx * cw.toFloat()).toInt().coerceIn(0, cw - 1)
+        val ty = (ny * ch.toFloat()).toInt().coerceIn(0, ch - 1)
+
+        runCatching { TapIndicatorService.showAtOnDisplay(this, tx.toFloat(), ty.toFloat(), did) }
+
+        workerScope.launch {
+            runCatching {
+                ShizukuBridge.execResult("input -d $did tap $tx $ty")
+            }
+        }
+    }
+
+    private data class VirtualMappedPoint(
+        val displayId: Int,
+        val x: Int,
+        val y: Int,
+        val w: Int,
+        val h: Int,
+    )
+
+    private fun mapToolboxPreviewPointToVirtualDisplayBestEffort(viewX: Float, viewY: Float): VirtualMappedPoint? {
+        if (!isVirtualIsolatedMode()) return null
+        val did = VirtualDisplayController.getDisplayId() ?: return null
+        if (did <= 0) return null
+
+        val wrap = toolboxPreviewWrapView ?: return null
+        val vw = wrap.width
+        val vh = wrap.height
+        if (vw <= 0 || vh <= 0) return null
+
+        val size = runCatching { com.example.autoglm.vdiso.ShizukuVirtualDisplayEngine.getLatestContentSize() }.getOrNull()
+        val cw = size?.first?.takeIf { it > 0 } ?: 848
+        val ch = size?.second?.takeIf { it > 0 } ?: 480
+
+        val nx = (viewX / vw.toFloat()).coerceIn(0f, 1f)
+        val ny = (viewY / vh.toFloat()).coerceIn(0f, 1f)
+        val tx = (nx * cw.toFloat()).toInt().coerceIn(0, cw - 1)
+        val ty = (ny * ch.toFloat()).toInt().coerceIn(0, ch - 1)
+
+        return VirtualMappedPoint(displayId = did, x = tx, y = ty, w = cw, h = ch)
+    }
+
+    private fun showLocalPreviewIndicatorAt(viewX: Float, viewY: Float) {
+        val v = toolboxPreviewLocalIndicatorView ?: return
+        val wrap = toolboxPreviewWrapView ?: return
+        if (v.parent == null || wrap.width <= 0 || wrap.height <= 0) return
+
+        val r = (v.layoutParams?.width ?: dp(14)).toFloat() / 2f
+        val cx = viewX.coerceIn(0f, wrap.width.toFloat())
+        val cy = viewY.coerceIn(0f, wrap.height.toFloat())
+        v.translationX = cx - r
+        v.translationY = cy - r
+        if (v.visibility != View.VISIBLE) v.visibility = View.VISIBLE
+    }
+
+    private fun hideLocalPreviewIndicator() {
+        toolboxPreviewLocalIndicatorView?.visibility = View.GONE
+    }
+
+    private class VirtualSingleTouchInjector {
+        @Volatile
+        private var inputManager: Any? = null
+
+        private var injectMethod: java.lang.reflect.Method? = null
+        private var setDisplayIdMethod: java.lang.reflect.Method? = null
+
+        private fun getInputManagerCached(): Any {
+            val existing = inputManager
+            if (existing != null) return existing
+            return com.example.autoglm.vdiso.ShizukuServiceHub.getInputManager().also { inputManager = it }
+        }
+
+        private fun ensureMethods(inputManager: Any) {
+            if (injectMethod == null) {
+                injectMethod = inputManager.javaClass.methods.firstOrNull { m ->
+                    m.name == "injectInputEvent" && m.parameterTypes.size == 2
+                }
+            }
+            if (setDisplayIdMethod == null) {
+                setDisplayIdMethod = MotionEvent::class.java.methods.firstOrNull { m ->
+                    m.name == "setDisplayId" && m.parameterTypes.size == 1 && m.parameterTypes[0] == Int::class.javaPrimitiveType
+                }
+            }
+        }
+
+        private fun MotionEvent.applyDisplayId(displayId: Int): MotionEvent {
+            val m = setDisplayIdMethod
+            if (m != null) {
+                runCatching { m.invoke(this, displayId) }
+            }
+            return this
+        }
+
+        fun inject(displayId: Int, downTime: Long, eventTime: Long, action: Int, x: Float, y: Float) {
+            val inputManager = getInputManagerCached()
+            ensureMethods(inputManager)
+            val inject = injectMethod ?: throw NoSuchMethodException("injectInputEvent not found")
+
+            val props = arrayOf(
+                MotionEvent.PointerProperties().apply {
+                    id = 0
+                    toolType = MotionEvent.TOOL_TYPE_FINGER
+                }
+            )
+            val coords = arrayOf(
+                MotionEvent.PointerCoords().apply {
+                    this.x = x
+                    this.y = y
+                    pressure = 1f
+                    size = 1f
+                }
+            )
+
+            val ev = MotionEvent.obtain(
+                downTime,
+                eventTime,
+                action,
+                1,
+                props,
+                coords,
+                0,
+                0,
+                1f,
+                1f,
+                0,
+                0,
+                0,
+                0,
+            ).applyDisplayId(displayId)
+            ev.source = InputDevice.SOURCE_TOUCHSCREEN
+
+            val ok = inject.invoke(inputManager, ev, 0) as? Boolean ?: false
+            ev.recycle()
+            if (!ok) throw IllegalStateException("injectInputEvent returned false")
+        }
+    }
+
+    private val virtualSingleTouchInjector by lazy { VirtualSingleTouchInjector() }
+
+    private fun injectVirtualSingleTouchBestEffort(
+        displayId: Int,
+        downTime: Long,
+        eventTime: Long,
+        action: Int,
+        x: Int,
+        y: Int,
+        ensureFocus: Boolean,
+    ) {
+        if (!isVirtualIsolatedMode()) return
+        if (displayId <= 0) return
+        if (!ShizukuBridge.pingBinder() || !ShizukuBridge.hasPermission()) return
+
+        if (ensureFocus) {
+            runCatching { com.example.autoglm.vdiso.ShizukuVirtualDisplayEngine.ensureFocusedDisplay(displayId) }
+        }
+
+        runCatching {
+            virtualSingleTouchInjector.inject(
+                displayId = displayId,
+                downTime = downTime,
+                eventTime = eventTime,
+                action = action,
+                x = x.toFloat(),
+                y = y.toFloat(),
+            )
+        }
+    }
+
     private fun setToolboxExpanded(expanded: Boolean, animate: Boolean) {
+        diag("setToolboxExpanded:$expanded:enter")
         toolboxExpanded = expanded
         val panel = toolboxPanelView ?: return
         val w = toolboxWidthPx().toFloat()
@@ -260,6 +574,7 @@ class FloatingStatusService : Service() {
 
         if (wm != null && toolbox != null && toolboxLp != null) {
             snapToolboxToEdge(lp ?: toolboxLp)
+            clampToolboxPosition(toolboxLp)
             try {
                 wm.updateViewLayout(toolbox, toolboxLp)
             } catch (_: Exception) {
@@ -294,6 +609,19 @@ class FloatingStatusService : Service() {
         mainHandler.post {
             updateToolboxModeLabel()
             if (expanded) {
+                val tlp = toolboxLayoutParams
+                val toolbox = toolboxPanelView
+                val wm2 = windowManager
+                if (wm2 != null && toolbox != null && tlp != null) {
+                    toolbox.post {
+                        try {
+                            clampToolboxPosition(tlp)
+                            wm2.updateViewLayout(toolbox, tlp)
+                        } catch (_: Exception) {
+                        }
+                        diag("setToolboxExpanded:$expanded:postClamp")
+                    }
+                }
                 if (isVirtualIsolatedMode()) {
                     // 虚拟隔离模式：预览必须完全走 VirtualDisplay -> SurfaceView(surface) 的直出链路，
                     // 禁止 ticker/bitmap/canvas 的软件绘制，否则展开时容易触发 GC/掉帧。
@@ -321,6 +649,7 @@ class FloatingStatusService : Service() {
                     unbindVirtualPreviewSurfaceBestEffort()
                 }
             }
+            diag("setToolboxExpanded:$expanded:after")
         }
     }
 
@@ -401,7 +730,7 @@ class FloatingStatusService : Service() {
     private fun updateToolboxModeLabel() {
         val tv = toolboxModeTextView ?: return
         val isVirtual = isVirtualIsolatedMode()
-        tv.text = if (isVirtual) "虚拟隔离模式" else "主屏幕控制模式"
+        tv.text = if (isVirtual) "虚拟隔离模式" else "主屏幕模式"
 
         val sv = toolboxPreviewTextureView
         val iv = toolboxPreviewView
@@ -411,6 +740,12 @@ class FloatingStatusService : Service() {
         } else {
             sv?.visibility = View.GONE
             iv?.visibility = View.VISIBLE
+        }
+
+        toolboxPreviewTouchLayerView?.apply {
+            visibility = if (isVirtual) View.VISIBLE else View.GONE
+            isClickable = isVirtual
+            isEnabled = isVirtual
         }
 
         val last = lastToolboxIsVirtualMode
@@ -599,7 +934,7 @@ class FloatingStatusService : Service() {
     }
 
     private fun getTopComponentOnDisplayBestEffort(displayId: Int): String {
-        if (displayId <= 0) return ""
+        if (displayId < 0) return ""
         if (!ShizukuBridge.pingBinder() || !ShizukuBridge.hasPermission()) return ""
         val dump = runCatching { ShizukuBridge.execText("dumpsys activity activities") }.getOrNull().orEmpty()
         if (dump.isBlank()) return ""
@@ -714,6 +1049,142 @@ class FloatingStatusService : Service() {
             Log.w(TAG, "resolveLaunchComponentViaShizuku failed: exitCode=${r.exitCode} cmd=$cmd stderr=${r.stderrText().trim().take(200)} stdout=${out.trim().take(200)}")
         }
         return ""
+    }
+
+    private fun resolveLaunchComponentBestEffort(pkg: String): String {
+        val p = pkg.trim()
+        if (p.isEmpty()) return ""
+
+        val launchCn = try {
+            packageManager.getLaunchIntentForPackage(p)?.component
+        } catch (_: Exception) {
+            null
+        } ?: run {
+            try {
+                val i = android.content.Intent(android.content.Intent.ACTION_MAIN).apply {
+                    addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+                    setPackage(p)
+                }
+                val ri = packageManager.queryIntentActivities(i, 0).firstOrNull()
+                ri?.activityInfo?.let { android.content.ComponentName(it.packageName, it.name) }
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        return if (launchCn != null) {
+            "${launchCn.packageName}/${launchCn.className}"
+        } else {
+            // Android 11+ package visibility might block PackageManager from seeing 3rd-party launchers.
+            resolveLaunchComponentViaShizukuBestEffort(p)
+        }
+    }
+
+    private fun switchMainTopAppToVirtualDisplayIfWelcomeBestEffort() {
+        val did = VirtualDisplayController.getDisplayId()
+        if (did == null) {
+            Log.w(TAG, "castToVirtual failed: displayId is null")
+            runCatching { ChatEventBus.postText(MessageRole.AI, "投屏到虚拟屏失败：未获取到虚拟屏 displayId") }
+            return
+        }
+
+        if (!ShizukuBridge.pingBinder() || !ShizukuBridge.hasPermission()) {
+            Log.w(TAG, "castToVirtual failed: shizuku not ready (ping=${ShizukuBridge.pingBinder()} perm=${ShizukuBridge.hasPermission()})")
+            runCatching { ChatEventBus.postText(MessageRole.AI, "投屏到虚拟屏失败：Shizuku 未连接或未授权") }
+            return
+        }
+
+        val virtualTop = getTopComponentOnDisplayBestEffort(did)
+        val welcomeComponent = "$packageName/.WelcomeActivity"
+        if (virtualTop != welcomeComponent) {
+            Log.i(TAG, "castToVirtual skip: virtualTop=$virtualTop (not welcome)")
+            return
+        }
+
+        val mainTop = getTopComponentOnDisplayBestEffort(0)
+        if (mainTop.isBlank()) {
+            Log.w(TAG, "castToVirtual failed: main top component blank")
+            runCatching { ChatEventBus.postText(MessageRole.AI, "投屏到虚拟屏失败：未解析到主屏顶层 Activity") }
+            return
+        }
+
+        val mainPkg = extractPackageFromComponent(mainTop)
+        if (mainPkg.isBlank()) {
+            runCatching { ChatEventBus.postText(MessageRole.AI, "投屏到虚拟屏失败：主屏顶层组件解析不到包名：$mainTop") }
+            return
+        }
+
+        // Never cast our own app (especially chat UI) to the virtual display.
+        if (mainPkg == packageName) {
+            runCatching {
+                ChatEventBus.postText(
+                    MessageRole.AI,
+                    "检测到主屏当前为本应用（$mainTop），已跳过投屏到虚拟屏。"
+                )
+            }
+            return
+        }
+
+        val launchComponent = resolveLaunchComponentBestEffort(mainPkg)
+        if (launchComponent.isBlank()) {
+            runCatching { ChatEventBus.postText(MessageRole.AI, "投屏到虚拟屏失败：无法获取启动入口：$mainPkg") }
+            return
+        }
+
+        val flags = 0x10200000
+        val candidates = listOf(
+            "cmd activity start-activity --user 0 --display $did --windowingMode 1 --activity-reorder-to-front -n $launchComponent -f $flags",
+            "cmd activity start-activity --user 0 --display $did --windowingMode 1 -n $launchComponent -f $flags",
+            "am start --user 0 --display $did --activity-reorder-to-front -n $launchComponent -f $flags",
+            "am start --user 0 --display $did -n $launchComponent -f $flags",
+        )
+
+        var success = false
+        val errors = StringBuilder()
+        for (c in candidates) {
+            val r = runCatching { ShizukuBridge.execResult(c) }.getOrNull()
+            if (r != null) {
+                Log.i(
+                    TAG,
+                    "castToVirtual exec: exitCode=${r.exitCode} cmd=$c stderr=${r.stderrText().trim().take(200)} stdout=${r.stdoutText().trim().take(200)}"
+                )
+            }
+            if (r != null && r.exitCode == 0) {
+                success = true
+                break
+            }
+            val err = r?.stderrText().orEmpty().trim()
+            val out = r?.stdoutText().orEmpty().trim()
+            if (err.isNotEmpty() || out.isNotEmpty()) {
+                errors.append("\n").append(c).append("\n").append(err.ifEmpty { out }.take(220))
+            }
+        }
+
+        if (success) {
+            runCatching { ChatEventBus.postText(MessageRole.AI, "已将主屏应用投屏到虚拟屏：$mainPkg -> $launchComponent") }
+        } else {
+            runCatching {
+                ChatEventBus.postText(
+                    MessageRole.AI,
+                    "投屏到虚拟屏失败：$mainPkg -> $launchComponent" + if (errors.isNotEmpty()) ("\n" + errors.toString().trim()) else ""
+                )
+            }
+        }
+    }
+
+    private fun switchToMainOrCastFromMainDependingOnVirtualTopBestEffort() {
+        val did = VirtualDisplayController.getDisplayId()
+        if (did == null) {
+            runCatching { ChatEventBus.postText(MessageRole.AI, "切换失败：未获取到虚拟屏 displayId") }
+            return
+        }
+        val virtualTop = getTopComponentOnDisplayBestEffort(did)
+        val welcomeComponent = "$packageName/.WelcomeActivity"
+        if (virtualTop == welcomeComponent) {
+            switchMainTopAppToVirtualDisplayIfWelcomeBestEffort()
+        } else {
+            switchVirtualTopAppToMainDisplayBestEffort()
+        }
     }
 
     private fun switchVirtualTopAppToMainDisplayBestEffort() {
@@ -844,6 +1315,12 @@ class FloatingStatusService : Service() {
         lp.y = lp.y.coerceIn(-maxY, maxY)
     }
 
+    private fun clampToolboxPosition(lp: WindowManager.LayoutParams) {
+        val toolboxW = toolboxWidthPx()
+        val h = lp.height.takeIf { it > 0 } ?: toolboxWindowHeightPx()
+        clampOverlayPosition(lp, toolboxW, h)
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -933,6 +1410,7 @@ class FloatingStatusService : Service() {
         val wm = windowManager ?: return
         val bar = barView ?: return
         val lp = barLayoutParams ?: return
+        diag("onConfigurationChanged:before")
         val barW = bar.width.takeIf { it > 0 } ?: (if (toolboxExpanded) (handleWidthPx() + toolboxWidthPx()) else handleWidthPx())
         val barH = bar.height.takeIf { it > 0 } ?: dp(120)
         clampOverlayPosition(lp, barW, barH)
@@ -942,7 +1420,19 @@ class FloatingStatusService : Service() {
         } catch (_: Exception) {
         }
 
+        val toolbox = toolboxPanelView
+        val tlp = toolboxLayoutParams
+        if (toolbox != null && tlp != null) {
+            tlp.height = toolboxWindowHeightPx()
+            clampToolboxPosition(tlp)
+            try {
+                wm.updateViewLayout(toolbox, tlp)
+            } catch (_: Exception) {
+            }
+        }
+
         updateSummaryBubblePositionIfNeeded()
+        diag("onConfigurationChanged:after")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -999,13 +1489,14 @@ class FloatingStatusService : Service() {
             removeViewIfNeeded()
             windowManager = null
         }
-        stopToolboxPreviewTicker()
-        try { toolboxPreviewBitmap?.recycle() } catch (_: Exception) {}
-        toolboxPreviewBitmap = null
-        try {
-            stopMicFlowEffect()
-        } catch (_: Exception) {
+
+        runCatching {
+            inputInjectionHandler?.removeCallbacksAndMessages(null)
+            inputInjectionHandler = null
+            inputInjectionThread?.quitSafely()
+            inputInjectionThread = null
         }
+
         try {
             workerScope.cancel()
         } catch (_: Exception) {
@@ -1016,7 +1507,7 @@ class FloatingStatusService : Service() {
     private fun ensureViewCreatedIfNeeded() {
         if (barView != null) return
 
-        val context = this
+        val context = mainDisplayContext()
         val barWidth = handleWidthPx()
 
         val bgDrawable = GradientDrawable().apply {
@@ -1195,6 +1686,14 @@ class FloatingStatusService : Service() {
             isFocusableInTouchMode = false
         }
 
+        val panelContent = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
         val previewTexture = TextureView(context).apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -1285,9 +1784,169 @@ class FloatingStatusService : Service() {
             addView(modeText)
         }
 
+        val previewLocalIndicator = View(context).apply {
+            val s = dp(14)
+            layoutParams = FrameLayout.LayoutParams(s, s)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#CC00E5FF"))
+                setStroke(dp(2), Color.WHITE)
+            }
+            visibility = View.GONE
+            isClickable = false
+            isFocusable = false
+            isFocusableInTouchMode = false
+        }
+        previewWrap.addView(previewLocalIndicator)
+
+        val previewTouchLayer = View(context).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            isClickable = true
+            isFocusable = false
+            isFocusableInTouchMode = false
+            visibility = if (isVirtualIsolatedMode()) View.VISIBLE else View.GONE
+
+            var gestureDownTime = 0L
+            var lastMoveInjectTime = 0L
+            var lastIndicatorTime = 0L
+            var downViewX = 0f
+            var downViewY = 0f
+            var moved = false
+
+            var gestureDisplayId = 0
+            var gestureContentW = 0
+            var gestureContentH = 0
+
+            fun mapForGesture(viewX: Float, viewY: Float): VirtualMappedPoint? {
+                if (!isVirtualIsolatedMode()) return null
+                val did = gestureDisplayId
+                if (did <= 0) return null
+
+                val wrap = toolboxPreviewWrapView ?: return null
+                val vw = wrap.width
+                val vh = wrap.height
+                if (vw <= 0 || vh <= 0) return null
+
+                val cw = gestureContentW.takeIf { it > 0 } ?: 848
+                val ch = gestureContentH.takeIf { it > 0 } ?: 480
+
+                val nx = (viewX / vw.toFloat()).coerceIn(0f, 1f)
+                val ny = (viewY / vh.toFloat()).coerceIn(0f, 1f)
+                val tx = (nx * cw.toFloat()).toInt().coerceIn(0, cw - 1)
+                val ty = (ny * ch.toFloat()).toInt().coerceIn(0, ch - 1)
+                return VirtualMappedPoint(displayId = did, x = tx, y = ty, w = cw, h = ch)
+            }
+
+            val moveThresholdPx = dp(6).toFloat()
+            val longPressThresholdMs = 450L
+            val moveInjectMinIntervalMs = 16L
+
+            setOnTouchListener { _, ev ->
+                if (!isVirtualIsolatedMode()) return@setOnTouchListener false
+
+                when (ev.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        gestureDownTime = android.os.SystemClock.uptimeMillis()
+                        lastMoveInjectTime = 0L
+                        lastIndicatorTime = 0L
+                        downViewX = ev.x
+                        downViewY = ev.y
+                        moved = false
+
+                        gestureDisplayId = VirtualDisplayController.getDisplayId() ?: 0
+                        val size = runCatching {
+                            com.example.autoglm.vdiso.ShizukuVirtualDisplayEngine.getLatestContentSize()
+                        }.getOrNull()
+                        gestureContentW = size?.first?.takeIf { it > 0 } ?: 0
+                        gestureContentH = size?.second?.takeIf { it > 0 } ?: 0
+
+                        val p = mapForGesture(ev.x, ev.y)
+                        if (p != null) {
+                            showLocalPreviewIndicatorAt(ev.x, ev.y)
+                            enqueueVirtualTouchCmd(
+                                VirtualTouchCmd(
+                                    displayId = p.displayId,
+                                    downTime = gestureDownTime,
+                                    eventTime = gestureDownTime,
+                                    action = MotionEvent.ACTION_DOWN,
+                                    x = p.x,
+                                    y = p.y,
+                                    ensureFocus = true,
+                                )
+                            )
+                        }
+                        true
+                    }
+
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = kotlin.math.abs(ev.x - downViewX)
+                        val dy = kotlin.math.abs(ev.y - downViewY)
+                        if (!moved && (dx >= moveThresholdPx || dy >= moveThresholdPx)) {
+                            moved = true
+                        }
+
+                        val now = android.os.SystemClock.uptimeMillis()
+                        if (now - lastMoveInjectTime >= moveInjectMinIntervalMs) {
+                            lastMoveInjectTime = now
+                            val p = mapForGesture(ev.x, ev.y)
+                            if (p != null) {
+                                if (now - lastIndicatorTime >= 33L) {
+                                    lastIndicatorTime = now
+                                    showLocalPreviewIndicatorAt(ev.x, ev.y)
+                                }
+                                enqueueVirtualTouchCmd(
+                                    VirtualTouchCmd(
+                                        displayId = p.displayId,
+                                        downTime = gestureDownTime,
+                                        eventTime = now,
+                                        action = MotionEvent.ACTION_MOVE,
+                                        x = p.x,
+                                        y = p.y,
+                                        ensureFocus = false,
+                                    )
+                                )
+                            }
+                        }
+                        true
+                    }
+
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        val upTime = android.os.SystemClock.uptimeMillis()
+                        val p = mapForGesture(ev.x, ev.y)
+
+                        if (p != null) {
+                            enqueueVirtualTouchCmd(
+                                VirtualTouchCmd(
+                                    displayId = p.displayId,
+                                    downTime = gestureDownTime,
+                                    eventTime = upTime,
+                                    action = MotionEvent.ACTION_UP,
+                                    x = p.x,
+                                    y = p.y,
+                                    ensureFocus = false,
+                                )
+                            )
+                        }
+                        hideLocalPreviewIndicator()
+                        gestureDisplayId = 0
+                        gestureContentW = 0
+                        gestureContentH = 0
+                        true
+                    }
+
+                    else -> true
+                }
+            }
+        }
+        previewWrap.addView(previewTouchLayer)
+
         val row = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END
+            gravity = Gravity.CENTER_HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1301,9 +1960,15 @@ class FloatingStatusService : Service() {
                 isClickable = false
                 isFocusable = false
                 isFocusableInTouchMode = false
+                layoutParams = LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1f
+                )
             }
             val btnV = ImageButton(context).apply {
                 setImageResource(iconRes)
+                imageTintList = ColorStateList.valueOf(Color.WHITE)
                 setBackgroundColor(Color.TRANSPARENT)
                 setOnClickListener { onClick() }
                 layoutParams = LinearLayout.LayoutParams(dp(36), dp(36))
@@ -1349,8 +2014,24 @@ class FloatingStatusService : Service() {
             }
             workerScope.launch {
                 try {
-                    switchVirtualTopAppToMainDisplayBestEffort()
+                    switchToMainOrCastFromMainDependingOnVirtualTopBestEffort()
                 } catch (_: Exception) {
+                }
+            }
+        }
+
+        val btnVirtualBack = makeLabeledToolButton(
+            android.R.drawable.ic_media_previous,
+            "虚拟返回"
+        ) {
+            if (!isVirtualIsolatedMode()) return@makeLabeledToolButton
+            val did = VirtualDisplayController.getDisplayId() ?: return@makeLabeledToolButton
+            if (did <= 0) return@makeLabeledToolButton
+            if (!ShizukuBridge.pingBinder() || !ShizukuBridge.hasPermission()) return@makeLabeledToolButton
+            workerScope.launch {
+                runCatching {
+                    VirtualDisplayController.ensureFocusedDisplayBestEffort()
+                    ShizukuBridge.execResult("input -d $did keyevent ${android.view.KeyEvent.KEYCODE_BACK}")
                 }
             }
         }
@@ -1364,15 +2045,19 @@ class FloatingStatusService : Service() {
 
         row.addView(btnToApp)
         row.addView(btnToMain)
+        row.addView(btnVirtualBack)
         row.addView(btnClose)
 
-        panel.addView(previewWrap)
-        panel.addView(row)
+        panelContent.addView(previewWrap)
+        panelContent.addView(row)
+        panel.addView(panelContent)
 
         toolboxPanelView = panel
         toolboxPreviewView = previewImage
         toolboxPreviewTextureView = previewTexture
         toolboxPreviewWrapView = previewWrap
+        toolboxPreviewTouchLayerView = previewTouchLayer
+        toolboxPreviewLocalIndicatorView = previewLocalIndicator
         toolboxModeTextView = modeText
         toolboxCloseButtonView = btnClose
         toolboxToMainButtonView = btnToMain
@@ -1513,7 +2198,7 @@ class FloatingStatusService : Service() {
 
         val toolboxParams = WindowManager.LayoutParams(
             toolboxWidthPx(),
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            toolboxWindowHeightPx(),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
@@ -1531,8 +2216,8 @@ class FloatingStatusService : Service() {
         toolboxLayoutParams = toolboxParams
         toolboxPanelView = panel
 
-        windowManager?.addView(root, barParams)
         windowManager?.addView(panel, toolboxParams)
+        windowManager?.addView(root, barParams)
 
         root.translationX = if (dockOnRight) barWidth.toFloat() else (-barWidth).toFloat()
 
@@ -1548,6 +2233,8 @@ class FloatingStatusService : Service() {
         stopButtonView = btn
         barLayoutParams = barParams
 
+        diag("ensureViewCreated")
+
         updateText("等待指令")
     }
 
@@ -1559,6 +2246,8 @@ class FloatingStatusService : Service() {
         val tlp = toolboxLayoutParams
         if (bar == null || lp == null) return
 
+        diag("applyLayoutParams:before")
+
         val barW = bar.width.takeIf { it > 0 } ?: handleWidthPx()
         val barH = bar.height.takeIf { it > 0 } ?: dp(120)
         clampOverlayPosition(lp, barW, barH)
@@ -1569,11 +2258,14 @@ class FloatingStatusService : Service() {
         }
 
         if (toolbox != null && tlp != null) {
+            tlp.height = toolboxWindowHeightPx()
+            clampToolboxPosition(tlp)
             try {
                 wm.updateViewLayout(toolbox, tlp)
             } catch (_: Exception) {
             }
         }
+        diag("applyLayoutParams:after")
     }
 
     private fun setTaskRunningState(running: Boolean) {
@@ -1678,7 +2370,9 @@ class FloatingStatusService : Service() {
         val bar = barView ?: return
         val barLp = barLayoutParams ?: return
 
-        val bubble = LinearLayout(this).apply {
+        val ctx = mainDisplayContext()
+
+        val bubble = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             isClickable = true
             isFocusable = false
@@ -1692,8 +2386,9 @@ class FloatingStatusService : Service() {
         bubble.background = bubbleBg
         applyBubbleBackground(bubbleBg, dockOnRight)
 
-        val closeBtn = ImageButton(this).apply {
+        val closeBtn = ImageButton(ctx).apply {
             setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
+            imageTintList = ColorStateList.valueOf(Color.WHITE)
             background = null
             setPadding(0, 0, 0, 0)
             isClickable = true
@@ -1703,13 +2398,13 @@ class FloatingStatusService : Service() {
             }
         }
 
-        val header = LinearLayout(this).apply {
+        val header = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.END
             addView(closeBtn, LinearLayout.LayoutParams(dp(20), dp(20)))
         }
 
-        val tv = TextView(this).apply {
+        val tv = TextView(ctx).apply {
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             maxLines = 8
@@ -1920,8 +2615,9 @@ class FloatingStatusService : Service() {
     }
 
     private fun getStatusBarHeightPx(): Int {
-        val resId = resources.getIdentifier("status_bar_height", "dimen", "android")
-        val h = if (resId > 0) resources.getDimensionPixelSize(resId) else dp(24)
+        val r = mainDisplayContext().resources
+        val resId = r.getIdentifier("status_bar_height", "dimen", "android")
+        val h = if (resId > 0) r.getDimensionPixelSize(resId) else dp(24)
         return if (h <= 0) dp(24) else h
     }
 
@@ -1929,7 +2625,7 @@ class FloatingStatusService : Service() {
         return TypedValue.applyDimension(
             TypedValue.COMPLEX_UNIT_DIP,
             v.toFloat(),
-            resources.displayMetrics
+            mainDisplayMetrics()
         ).toInt()
     }
 

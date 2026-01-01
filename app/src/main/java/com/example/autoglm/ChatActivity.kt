@@ -15,6 +15,7 @@ import android.widget.ImageButton
 import android.widget.TextView
 import android.widget.Toast
 import android.os.Build
+import android.app.ActivityOptions
 import android.provider.Settings
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -144,8 +145,32 @@ class ChatActivity : ComponentActivity() {
         }
     }
 
+    private fun relaunchToMainDisplayIfNeeded(): Boolean {
+        val currentDisplayId = runCatching { display?.displayId ?: 0 }.getOrElse { 0 }
+        if (currentDisplayId == 0) return false
+        if (intent?.getBooleanExtra(EXTRA_RELAUNCHED_TO_MAIN, false) == true) return false
+
+        return runCatching {
+            val i = Intent(this, ChatActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                putExtra(EXTRA_RELAUNCHED_TO_MAIN, true)
+            }
+            val opts = ActivityOptions.makeBasic().apply {
+                setLaunchDisplayId(0)
+            }
+            startActivity(i, opts.toBundle())
+            finish()
+            true
+        }.getOrElse { false }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        if (relaunchToMainDisplayIfNeeded()) {
+            return
+        }
         setContentView(R.layout.activity_chat)
 
         try {
@@ -1652,7 +1677,21 @@ class ChatActivity : ComponentActivity() {
                     onTapIndicator = { x, y ->
                         // 在点击坐标显示圆形指示器
                         runOnUiThread {
-                            TapIndicatorService.showAt(this@ChatActivity, x, y)
+                            try {
+                                val execEnv = ConfigManager(this@ChatActivity).getExecutionEnvironment()
+                                if (execEnv == ConfigManager.EXEC_ENV_VIRTUAL) {
+                                    val did = VirtualDisplayController.getDisplayId() ?: 0
+                                    if (did > 0) {
+                                        TapIndicatorService.showAtOnDisplay(this@ChatActivity, x, y, did)
+                                    } else {
+                                        TapIndicatorService.showAt(this@ChatActivity, x, y)
+                                    }
+                                } else {
+                                    TapIndicatorService.showAt(this@ChatActivity, x, y)
+                                }
+                            } catch (_: Exception) {
+                                TapIndicatorService.showAt(this@ChatActivity, x, y)
+                            }
                         }
                     },
                 )
@@ -1782,6 +1821,7 @@ class ChatActivity : ComponentActivity() {
 
         const val EXTRA_CONFIRM_REDIRECT_MESSAGE = "extra_confirm_redirect_message"
         const val EXTRA_OVERLAY_MIC_ACTION = "extra_overlay_mic_action"
+        private const val EXTRA_RELAUNCHED_TO_MAIN = "extra_relaunched_to_main_display"
     }
 
     class AndroidAgentCallback(

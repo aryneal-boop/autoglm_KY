@@ -141,6 +141,39 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:fontFamily="monospace"
+                android:text="VIRTUAL_DISPLAY_DPI"
+                android:textColor="@color/neon_cyan"
+                android:textSize="13sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:fontFamily="monospace"
+                android:text="虚拟屏幕密度（dpi），例如：142"
+                android:textColor="@color/text_hint"
+                android:textSize="11sp" />
+
+            <EditText
+                android:id="@+id/etVirtualDisplayDpi"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:background="@color/input_bg_dark"
+                android:fontFamily="monospace"
+                android:inputType="number"
+                android:minHeight="44dp"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/text_hint"
+                android:textSize="14sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
                 android:layout_marginTop="18dp"
                 android:fontFamily="monospace"
                 android:text="执行环境"
