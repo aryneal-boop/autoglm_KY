@@ -18,6 +18,7 @@ object ShizukuVirtualDisplaySurfaceStreamer {
         val dpi: Int = 440,
         val refreshRate: Float = 0f,
         val rotatesWithContent: Boolean = false,
+        val ownerPackage: String = "com.android.shell",
     )
 
     @Volatile
@@ -56,7 +57,7 @@ object ShizukuVirtualDisplaySurfaceStreamer {
                     m.parameterTypes[3] == String::class.java
             } ?: throw NoSuchMethodException("IDisplayManager.createVirtualDisplay(VirtualDisplayConfig, IVirtualDisplayCallback, IMediaProjection, String)")
 
-            val packageName = "com.android.shell"
+            val packageName = args.ownerPackage
             val id = (createMethod.invoke(displayManager, config, callback, null, packageName) as Int)
 
             vdCallback = callback

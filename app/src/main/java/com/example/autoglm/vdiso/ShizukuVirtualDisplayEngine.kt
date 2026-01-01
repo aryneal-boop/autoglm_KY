@@ -1,15 +1,10 @@
 package com.example.autoglm.vdiso
 
 import android.graphics.Bitmap
-import android.graphics.PixelFormat
-import android.media.Image
-import android.media.ImageReader
+import android.view.Surface
 import android.os.Binder
 import android.os.Build
-import android.os.Handler
-import android.os.HandlerThread
 import android.os.IInterface
-import android.os.Looper
 import android.util.Log
 import java.lang.reflect.Proxy
 
@@ -24,16 +19,8 @@ object ShizukuVirtualDisplayEngine {
         val dpi: Int = 440,
         val refreshRate: Float = 0f,
         val rotatesWithContent: Boolean = false,
+        val ownerPackage: String = "com.android.shell",
     )
-
-    @Volatile
-    private var imageReader: ImageReader? = null
-
-    @Volatile
-    private var readerThread: HandlerThread? = null
-
-    @Volatile
-    private var readerHandler: Handler? = null
 
     @Volatile
     private var displayId: Int? = null
@@ -42,20 +29,76 @@ object ShizukuVirtualDisplayEngine {
     private var vdCallback: Any? = null
 
     @Volatile
-    private var latestBitmap: Bitmap? = null
+    private var currentOutputSurface: Surface? = null
 
     @Volatile
-    private var latestFrameTimeMs: Long = 0L
+    private var glDispatcher: VdGlFrameDispatcher? = null
+
+    @Volatile
+    private var latestContentWidth: Int = 0
+
+    @Volatile
+    private var latestContentHeight: Int = 0
 
     private val frameLock = Any()
 
     @Volatile
     private var stopping: Boolean = false
 
+    private fun setVirtualDisplaySurfaceBestEffort(callback: Any, surface: Surface): Result<Unit> {
+        // 通过 IDisplayManager.setVirtualDisplaySurface*(...) 反射切换 VirtualDisplay 的输出 Surface。
+        // 用途：
+        // - 工具箱展开（虚拟隔离模式）时把输出切到 SurfaceView.surface，实现 0 bitmap 的直出预览。
+        // - 工具箱收起/切换回主屏模式时把输出切回 ImageReader.surface，便于继续做虚拟屏截图/识别。
+        return runCatching {
+            val displayManager = ShizukuServiceHub.getDisplayManager()
+
+            val cbInterface = runCatching { Class.forName("android.hardware.display.IVirtualDisplayCallback") }.getOrNull()
+            val asBinder = callback.javaClass.methods.firstOrNull { m ->
+                m.name == "asBinder" && m.parameterTypes.isEmpty() && m.returnType.name == "android.os.IBinder"
+            }
+            val binder = asBinder?.invoke(callback)
+
+            val candidates = displayManager.javaClass.methods.filter { m ->
+                m.name == "setVirtualDisplaySurface" || m.name == "setVirtualDisplaySurfaceAsync"
+            }
+
+            for (m in candidates) {
+                try {
+                    val p = m.parameterTypes
+                    when {
+                        p.size == 2 && cbInterface != null && p[0].isAssignableFrom(cbInterface) && p[1] == Surface::class.java -> {
+                            m.invoke(displayManager, callback, surface)
+                            return@runCatching
+                        }
+                        p.size == 2 && p[0].name == "android.hardware.display.IVirtualDisplayCallback" && p[1] == Surface::class.java -> {
+                            m.invoke(displayManager, callback, surface)
+                            return@runCatching
+                        }
+                        p.size == 2 && p[0].name == "android.os.IBinder" && p[1] == Surface::class.java && binder != null -> {
+                            m.invoke(displayManager, binder, surface)
+                            return@runCatching
+                        }
+                        p.size == 2 && IInterface::class.java.isAssignableFrom(p[0]) && p[1] == Surface::class.java -> {
+                            m.invoke(displayManager, callback, surface)
+                            return@runCatching
+                        }
+                    }
+                } catch (t: Throwable) {
+                    Log.w(TAG, "setVirtualDisplaySurface failed on ${m.name}", t)
+                }
+            }
+            throw IllegalStateException("No setVirtualDisplaySurface method matched")
+        }
+    }
+
     @Synchronized
     fun ensureStarted(args: Args = Args()): Result<Int> {
+        // 入口：确保虚拟屏已启动。
+        // 注意：VirtualDisplay 启动时默认输出到 ImageReader.surface，用于缓存帧（截图/识别）。
+        // 当需要 0 bitmap 预览时，外部会调用 setOutputSurface(surfaceViewSurface) 临时切换输出。
         val existing = displayId
-        if (existing != null && imageReader != null && vdCallback != null) {
+        if (existing != null && glDispatcher != null && vdCallback != null) {
             return Result.success(existing)
         }
         return start(args)
@@ -63,51 +106,41 @@ object ShizukuVirtualDisplayEngine {
 
     @Synchronized
     fun start(args: Args = Args()): Result<Int> {
+        // 启动 Shizuku VirtualDisplay，并用 ImageReader 接收 RGBA 帧。
+        // 帧接收线程在 HandlerThread 上运行，避免阻塞主线程。
         return runCatching {
             stop()
 
             stopping = false
 
-            val ht = HandlerThread("VdIsoFrame")
-            ht.start()
-            readerThread = ht
-            readerHandler = Handler(ht.looper)
+            val dispatcher = VdGlFrameDispatcher()
+            dispatcher.start(args.width, args.height)
+            glDispatcher = dispatcher
 
-            val reader = ImageReader.newInstance(
-                args.width,
-                args.height,
-                PixelFormat.RGBA_8888,
-                3,
-            )
-            imageReader = reader
+            // 等待 GL 初始化完成，拿到 VirtualDisplay 的输入 Surface（SurfaceTexture）。
+            val deadline = android.os.SystemClock.uptimeMillis() + 1500L
+            var input: Surface? = null
+            while (android.os.SystemClock.uptimeMillis() <= deadline) {
+                input = dispatcher.getInputSurface()
+                if (input != null && input.isValid) break
+                try {
+                    Thread.sleep(10L)
+                } catch (_: InterruptedException) {
+                    break
+                }
+            }
+            val inputSurface = input ?: throw IllegalStateException("GL input surface not ready")
+            currentOutputSurface = inputSurface
 
-            val created = createVirtualDisplay(args, reader)
+            // 在第一帧到达前，用创建时的目标分辨率作为内容尺寸兜底。
+            synchronized(frameLock) {
+                latestContentWidth = args.width
+                latestContentHeight = args.height
+            }
+
+            val created = createVirtualDisplay(args, inputSurface)
             vdCallback = created.second
             displayId = created.first
-
-            reader.setOnImageAvailableListener({ r ->
-                if (stopping) return@setOnImageAvailableListener
-                val img = runCatching { r.acquireLatestImage() }.getOrNull() ?: return@setOnImageAvailableListener
-                try {
-                    val bmp = imageToBitmap(img)
-                    val prev = synchronized(frameLock) {
-                        if (stopping) {
-                            null
-                        } else {
-                            val old = latestBitmap
-                            latestBitmap = bmp
-                            latestFrameTimeMs = android.os.SystemClock.uptimeMillis()
-                            old
-                        }
-                    }
-                    // Recycle previous frame outside the lock.
-                    runCatching { prev?.recycle() }
-                } catch (t: Throwable) {
-                    Log.w(TAG, "onImageAvailable: convert failed", t)
-                } finally {
-                    runCatching { img.close() }
-                }
-            }, readerHandler ?: Handler(Looper.getMainLooper()))
 
             Log.i(TAG, "started: displayId=${displayId} size=${args.width}x${args.height}")
             displayId ?: throw IllegalStateException("displayId is null")
@@ -116,42 +149,66 @@ object ShizukuVirtualDisplayEngine {
 
     fun getDisplayId(): Int? = displayId
 
-    fun isStarted(): Boolean = displayId != null && imageReader != null && vdCallback != null
+    fun isStarted(): Boolean = displayId != null && glDispatcher != null && vdCallback != null
 
-    fun getLatestFrameTimeMs(): Long = latestFrameTimeMs
+    fun getLatestFrameTimeMs(): Long = glDispatcher?.getLatestFrameTimeMs() ?: 0L
+
+    fun getLatestContentSize(): Pair<Int, Int> {
+        // latestBitmap 可能是带 rowStride padding 的“padded bitmap”。
+        // 这里返回的 content size 才是虚拟屏真实内容宽高，用于 UI 比例计算/裁剪绘制。
+        val d = glDispatcher
+        if (d != null) return d.getContentSize()
+        val (w, h) = synchronized(frameLock) { latestContentWidth to latestContentHeight }
+        return w to h
+    }
 
     fun captureLatestBitmap(): Result<Bitmap> {
-        val bmp = latestBitmap ?: return Result.failure(IllegalStateException("No cached frame yet"))
-        return runCatching { bmp.copy(Bitmap.Config.ARGB_8888, false) }
+        val d = glDispatcher ?: return Result.failure(IllegalStateException("GL dispatcher not started"))
+        val bmp = d.captureBitmapBlocking() ?: return Result.failure(IllegalStateException("No captured frame"))
+        return Result.success(bmp)
     }
 
     @Synchronized
     fun stop() {
         stopping = true
 
-        val toRecycle = synchronized(frameLock) {
-            val b = latestBitmap
-            latestBitmap = null
-            latestFrameTimeMs = 0L
-            b
+        val dispatcher = glDispatcher
+        glDispatcher = null
+        runCatching { dispatcher?.stop() }
+
+        synchronized(frameLock) {
+            // reset timestamps/size hints
+            latestContentWidth = 0
+            latestContentHeight = 0
         }
-        runCatching { toRecycle?.recycle() }
 
         val cb = vdCallback
         vdCallback = null
         displayId = null
 
-        runCatching { imageReader?.setOnImageAvailableListener(null, null) }
-        runCatching { imageReader?.close() }
-        imageReader = null
-
-        runCatching { readerThread?.quitSafely() }
-        readerThread = null
-        readerHandler = null
+        currentOutputSurface = null
 
         if (cb != null) {
             runCatching { releaseVirtualDisplayBestEffort(cb) }
         }
+    }
+
+    @Synchronized
+    fun setOutputSurface(surface: Surface): Result<Unit> {
+        // OpenGL 分发架构下：VirtualDisplay 固定输出到中转 SurfaceTexture。
+        // 这里的 setOutputSurface 仅用于设置“预览输出目标”（悬浮窗 TextureView 的 Surface）。
+        val d = glDispatcher ?: return Result.failure(IllegalStateException("GL dispatcher not started"))
+        if (stopping) return Result.failure(IllegalStateException("Engine stopping"))
+        d.setPreviewSurface(surface)
+        return Result.success(Unit)
+    }
+
+    @Synchronized
+    fun restoreOutputSurfaceToImageReader(): Result<Unit> {
+        // OpenGL 分发架构下：截图走 dispatcher 的离屏 ImageReader，不需要切换 VirtualDisplay 输出。
+        val d = glDispatcher ?: return Result.failure(IllegalStateException("GL dispatcher not started"))
+        d.setPreviewSurface(null)
+        return Result.success(Unit)
     }
 
     fun ensureFocusedDisplay(targetDisplayId: Int): Result<Unit> {
@@ -179,11 +236,11 @@ object ShizukuVirtualDisplayEngine {
         }
     }
 
-    private fun createVirtualDisplay(args: Args, reader: ImageReader): Pair<Int, Any> {
+    private fun createVirtualDisplay(args: Args, surface: Surface): Pair<Int, Any> {
         val displayManager = ShizukuServiceHub.getDisplayManager()
 
         val flags = buildFlags(rotatesWithContent = args.rotatesWithContent)
-        val config = buildVirtualDisplayConfig(args, reader, flags)
+        val config = buildVirtualDisplayConfig(args, surface, flags)
         val callback = createVirtualDisplayCallbackProxy()
 
         val callbackInterfaceClass = Class.forName("android.hardware.display.IVirtualDisplayCallback")
@@ -196,7 +253,7 @@ object ShizukuVirtualDisplayEngine {
                 m.parameterTypes[3] == String::class.java
         } ?: throw NoSuchMethodException("IDisplayManager.createVirtualDisplay(VirtualDisplayConfig, IVirtualDisplayCallback, IMediaProjection, String)")
 
-        val packageName = "com.android.shell"
+        val packageName = args.ownerPackage
         val id = (createMethod.invoke(displayManager, config, callback, null, packageName) as Int)
         Log.i(TAG, "createVirtualDisplay ok: displayId=$id flags=$flags")
         return id to callback
@@ -233,8 +290,7 @@ object ShizukuVirtualDisplayEngine {
         return flags
     }
 
-    private fun buildVirtualDisplayConfig(args: Args, reader: ImageReader, flags: Int): Any {
-        val surface = reader.surface
+    private fun buildVirtualDisplayConfig(args: Args, surface: Surface, flags: Int): Any {
         val builderClass = Class.forName("android.hardware.display.VirtualDisplayConfig\$Builder")
         val ctor = builderClass.getConstructor(
             String::class.java,
@@ -316,21 +372,4 @@ object ShizukuVirtualDisplayEngine {
         }
     }
 
-    private fun imageToBitmap(image: Image): Bitmap {
-        val plane = image.planes.firstOrNull() ?: throw IllegalStateException("No planes")
-        val buffer = plane.buffer
-
-        val pixelStride = plane.pixelStride
-        val rowStride = plane.rowStride
-        val rowPadding = rowStride - pixelStride * image.width
-
-        val bitmap = Bitmap.createBitmap(
-            image.width + rowPadding / pixelStride,
-            image.height,
-            Bitmap.Config.ARGB_8888,
-        )
-        bitmap.copyPixelsFromBuffer(buffer)
-
-        return Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
-    }
 }

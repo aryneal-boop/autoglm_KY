@@ -125,6 +125,15 @@ object TaskControl {
 
     @JvmStatic
     fun forceStopPython() {
+        forceStopPythonInternal(cleanupVirtualDisplay = true)
+    }
+
+    @JvmStatic
+    fun forceStopPythonKeepVirtualDisplay() {
+        forceStopPythonInternal(cleanupVirtualDisplay = false)
+    }
+
+    private fun forceStopPythonInternal(cleanupVirtualDisplay: Boolean) {
         isTaskRunning = false
         shouldStopTask = true
 
@@ -154,9 +163,11 @@ object TaskControl {
         try {
             val ctx = appContext
             if (ctx != null) {
-                try {
-                    VirtualDisplayController.cleanupAsync(ctx)
-                } catch (_: Exception) {
+                if (cleanupVirtualDisplay) {
+                    try {
+                        VirtualDisplayController.cleanupAsync(ctx)
+                    } catch (_: Exception) {
+                    }
                 }
                 val adbExecPath = LocalAdb.resolveAdbExecPath(ctx)
                 try {

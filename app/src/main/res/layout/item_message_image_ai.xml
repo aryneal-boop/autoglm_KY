@@ -10,7 +10,6 @@
         android:id="@+id/ivImage"
         android:layout_width="240dp"
         android:layout_height="420dp"
-        android:adjustViewBounds="true"
         android:scaleType="centerCrop"
         android:contentDescription="screenshot" />
 

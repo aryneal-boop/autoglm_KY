@@ -144,13 +144,20 @@ object ShizukuBridge {
     }
 
     private fun readAllBytes(input: java.io.InputStream): ByteArray {
-        val buffer = ByteArray(16 * 1024)
-        val out = ByteArrayOutputStream()
-        while (true) {
-            val n = input.read(buffer)
-            if (n <= 0) break
-            out.write(buffer, 0, n)
+        return try {
+            input.use { ins ->
+                ByteArrayOutputStream().use { out ->
+                    val buffer = ByteArray(16 * 1024)
+                    while (true) {
+                        val n = ins.read(buffer)
+                        if (n <= 0) break
+                        out.write(buffer, 0, n)
+                    }
+                    out.toByteArray()
+                }
+            }
+        } catch (_: Throwable) {
+            ByteArray(0)
         }
-        return out.toByteArray()
     }
 }

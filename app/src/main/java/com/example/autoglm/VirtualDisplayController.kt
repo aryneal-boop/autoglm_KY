@@ -5,16 +5,20 @@ import android.graphics.Bitmap
 import android.util.Base64
 import android.util.Log
 import android.media.ImageReader
-import androidx.lifecycle.DefaultLifecycleObserver
-import androidx.lifecycle.LifecycleOwner
-import androidx.lifecycle.ProcessLifecycleOwner
+import android.hardware.display.DisplayManager
+import android.os.Handler
+import android.os.Looper
 import java.io.ByteArrayOutputStream
 import kotlin.concurrent.thread
 import com.example.autoglm.vdiso.ShizukuVirtualDisplayEngine
+import com.example.autoglm.ShizukuBridge
 
 object VirtualDisplayController {
     @Volatile
     private var activeDisplayId: Int? = null
+
+    @Volatile
+    private var welcomeShownForCurrentVd: Boolean = false
 
     @Volatile
     private var lifecycleObserverInstalled: Boolean = false
@@ -35,6 +39,7 @@ object VirtualDisplayController {
         if (execEnv != ConfigManager.EXEC_ENV_VIRTUAL) {
             try { ShizukuVirtualDisplayEngine.stop() } catch (_: Exception) {}
             activeDisplayId = null
+            welcomeShownForCurrentVd = false
             return null
         }
 
@@ -52,8 +57,9 @@ object VirtualDisplayController {
 
         val dm = context.resources.displayMetrics
         val isLandscape = dm.widthPixels >= dm.heightPixels
-        val vdW = if (isLandscape) 854 else 480
-        val vdH = if (isLandscape) 480 else 854
+        // 480P 分辨率必须做 16 对齐，避免部分硬件/驱动在 stride/padding 上出现花屏。
+        val vdW = if (isLandscape) 848 else 480
+        val vdH = if (isLandscape) 480 else 848
         val vdDpi = if (vdW == 480 || vdH == 480) 142 else 440
 
         // Shizuku VirtualDisplay: strictly follow ReadVirtualDisplay.md principle.
@@ -65,19 +71,39 @@ object VirtualDisplayController {
                 dpi = vdDpi,
                 refreshRate = 0f,
                 rotatesWithContent = false,
+                ownerPackage = "com.android.shell",
             )
         )
         if (r.isSuccess) {
             val did = r.getOrNull()
+            val isNewOrChanged = (did != null && did != existing)
             activeDisplayId = did
+
+            if (isNewOrChanged) {
+                welcomeShownForCurrentVd = false
+            }
+            if (did != null && !welcomeShownForCurrentVd) {
+                welcomeShownForCurrentVd = true
+                showWelcomePresentationOnDisplay(context.applicationContext, did)
+            }
             return did
         }
         Log.w(TAG, "ShizukuVirtualDisplayEngine.ensureStarted failed", r.exceptionOrNull())
         activeDisplayId = null
+        welcomeShownForCurrentVd = false
         return null
     }
 
     fun getDisplayId(): Int? = activeDisplayId
+
+    @JvmStatic
+    fun showWelcomeOnActiveDisplayBestEffort(context: Context) {
+        val did = activeDisplayId ?: return
+        runCatching {
+            showWelcomePresentationOnDisplay(context.applicationContext, did)
+            welcomeShownForCurrentVd = true
+        }
+    }
 
     // --- Compatibility layer (old monitor UI expects these APIs) ---
     @Synchronized
@@ -178,6 +204,7 @@ object VirtualDisplayController {
         try { ShizukuVirtualDisplayEngine.stop() } catch (_: Exception) {}
 
         activeDisplayId = null
+        welcomeShownForCurrentVd = false
     }
 
     fun cleanupOverlayOnlyAsync(context: Context) {
@@ -192,26 +219,13 @@ object VirtualDisplayController {
         try { ShizukuVirtualDisplayEngine.stop() } catch (_: Exception) {}
 
         activeDisplayId = null
+        welcomeShownForCurrentVd = false
     }
 
     fun ensureProcessLifecycleObserverInstalled(context: Context) {
         if (lifecycleObserverInstalled) return
         synchronized(this) {
             if (lifecycleObserverInstalled) return
-            val appCtx = context.applicationContext
-            try {
-                ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
-                    override fun onStop(owner: LifecycleOwner) {
-                        try {
-                            if (!TaskControl.isTaskRunning) {
-                                cleanupOverlayOnlyAsync(appCtx)
-                            }
-                        } catch (_: Exception) {
-                        }
-                    }
-                })
-            } catch (_: Exception) {
-            }
             lifecycleObserverInstalled = true
         }
     }
@@ -228,9 +242,73 @@ object VirtualDisplayController {
         try { ShizukuVirtualDisplayEngine.stop() } catch (_: Exception) {}
 
         activeDisplayId = null
+        welcomeShownForCurrentVd = false
     }
 
     private const val TAG = "VirtualDisplay"
+
+    private fun showWelcomePresentationOnDisplay(appContext: Context, displayId: Int) {
+        // MIUI may reject Presentation windows on shell-owned virtual displays.
+        // Prefer launching a dedicated Activity on the target display via Shizuku shell.
+        if (ShizukuBridge.pingBinder() && ShizukuBridge.hasPermission()) {
+            thread(start = true, name = "ShowWelcomeOnDisplay") {
+                val component = "${appContext.packageName}/.WelcomeActivity"
+                val flags = 0x10000000
+                val candidates = listOf(
+                    "cmd activity start-activity --user 0 --display $displayId -n $component -f $flags",
+                    "am start --user 0 --display $displayId -n $component -f $flags",
+                    "am start --display $displayId -n $component -f $flags",
+                )
+                for (c in candidates) {
+                    val r = runCatching { ShizukuBridge.execResult(c) }.getOrNull()
+                    if (r != null) {
+                        val err = r.stderrText().trim()
+                        val out = r.stdoutText().trim()
+                        Log.i(
+                            TAG,
+                            "showWelcome exec: exitCode=${r.exitCode} cmd=$c stderr=${err.take(200)} stdout=${out.take(200)}"
+                        )
+                        if (r.exitCode == 0) {
+                            runCatching { ShizukuVirtualDisplayEngine.ensureFocusedDisplay(displayId) }
+                            return@thread
+                        }
+                    }
+                }
+            }
+            return
+        }
+
+        val dm = appContext.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: return
+        val h = Handler(Looper.getMainLooper())
+        val tryShow = object : Runnable {
+            var attempts = 0
+            override fun run() {
+                val targetDisplay = dm.getDisplay(displayId)
+                if (targetDisplay != null) {
+                    try {
+                        Log.i(TAG, "showWelcome: displayId=$displayId attempt=$attempts")
+                        WelcomePresentation(appContext, targetDisplay).show()
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "showWelcome failed: displayId=$displayId", t)
+                        // On some ROMs the Display object may exist but WMS isn't ready to attach windows yet.
+                        // Retry when we see InvalidDisplayException.
+                        if (t is android.view.WindowManager.InvalidDisplayException) {
+                            attempts++
+                            if (attempts >= 30) return
+                            h.postDelayed(this, 200L)
+                            return
+                        }
+                    }
+                    return
+                }
+                attempts++
+                if (attempts >= 30) return
+                h.postDelayed(this, 200L)
+            }
+        }
+        Log.i(TAG, "showWelcome scheduled: displayId=$displayId")
+        h.post(tryShow)
+    }
 
     private fun isLikelyBlackBitmap(bmp: Bitmap): Boolean {
         return runCatching {

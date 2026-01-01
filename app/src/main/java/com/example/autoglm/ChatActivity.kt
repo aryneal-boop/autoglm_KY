@@ -8,6 +8,9 @@ import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
 import android.os.Bundle
+import android.os.SystemClock
+import android.util.Log
+import android.view.MotionEvent
 import android.widget.ImageButton
 import android.widget.TextView
 import android.widget.Toast
@@ -45,7 +48,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.view.MotionEvent
 import android.view.View
 import android.os.Handler
 import android.os.Looper
@@ -79,6 +81,16 @@ import rikka.shizuku.Shizuku
 
 class ChatActivity : ComponentActivity() {
 
+    private val scrollDebugTag = "ChatScrollDebug"
+
+    private var lastUserTouchUptime: Long = 0L
+
+    private var lastScrollOffset: Int = -1
+    private var lastScrollUptime: Long = 0L
+
+    private var lastAnchorPos: Int = RecyclerView.NO_POSITION
+    private var lastAnchorTop: Int = 0
+
     private val idGen = AtomicLong(1L)
 
     private lateinit var tvAdbStatus: TextView
@@ -97,6 +109,9 @@ class ChatActivity : ComponentActivity() {
 
     private lateinit var adapter: ChatAdapter
     private lateinit var rootContainer: View
+
+    private var userDraggingMessages: Boolean = false
+    private var followBottom: Boolean = true
 
     private var isRunningTask: Boolean = false
     private var mergeStreamAfterStop: Boolean = false
@@ -168,10 +183,176 @@ class ChatActivity : ComponentActivity() {
         tvVoiceOverlay = findViewById(R.id.tvVoiceOverlay)
 
         adapter = ChatAdapter()
-        rvMessages.layoutManager = LinearLayoutManager(this).apply {
+        rvMessages.layoutManager = object : LinearLayoutManager(this) {
+            override fun supportsPredictiveItemAnimations(): Boolean {
+                return false
+            }
+        }.apply {
             stackFromEnd = true
         }
         rvMessages.adapter = adapter
+
+        try {
+            rvMessages.itemAnimator = null
+        } catch (_: Exception) {
+        }
+
+        try {
+            rvMessages.setItemViewCacheSize(50)
+        } catch (_: Exception) {
+        }
+
+        try {
+            rvMessages.recycledViewPool.setMaxRecycledViews(com.example.autoglm.chat.ChatAdapter.VT_IMAGE_AI, 50)
+        } catch (_: Exception) {
+        }
+
+        try {
+            adapter.registerAdapterDataObserver(object : RecyclerView.AdapterDataObserver() {
+                private fun logChange(event: String) {
+                    try {
+                        val st = Throwable().stackTrace
+                            .drop(1)
+                            .take(10)
+                            .joinToString(" | ") { "${it.className.substringAfterLast('.')}#${it.methodName}:${it.lineNumber}" }
+                        Log.w(scrollDebugTag, "AdapterDataObserver $event t=${SystemClock.uptimeMillis()} stack=$st")
+                    } catch (_: Exception) {
+                    }
+                    dumpScrollState("AdapterDataObserver $event")
+                }
+
+                override fun onChanged() {
+                    logChange("onChanged")
+                }
+
+                override fun onItemRangeInserted(positionStart: Int, itemCount: Int) {
+                    logChange("onItemRangeInserted start=$positionStart count=$itemCount")
+                }
+
+                override fun onItemRangeRemoved(positionStart: Int, itemCount: Int) {
+                    logChange("onItemRangeRemoved start=$positionStart count=$itemCount")
+                }
+
+                override fun onItemRangeChanged(positionStart: Int, itemCount: Int) {
+                    logChange("onItemRangeChanged start=$positionStart count=$itemCount")
+                }
+
+                override fun onItemRangeMoved(fromPosition: Int, toPosition: Int, itemCount: Int) {
+                    logChange("onItemRangeMoved from=$fromPosition to=$toPosition count=$itemCount")
+                }
+            })
+        } catch (_: Exception) {
+        }
+        try {
+            rvMessages.itemAnimator = null
+        } catch (_: Exception) {
+        }
+
+        try {
+            rvMessages.setOnTouchListener { _, ev ->
+                when (ev.actionMasked) {
+                    MotionEvent.ACTION_DOWN,
+                    MotionEvent.ACTION_MOVE,
+                    MotionEvent.ACTION_UP,
+                    MotionEvent.ACTION_CANCEL -> {
+                        lastUserTouchUptime = SystemClock.uptimeMillis()
+                    }
+                }
+                false
+            }
+        } catch (_: Exception) {
+        }
+
+        try {
+            rvMessages.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                override fun onScrollStateChanged(recyclerView: RecyclerView, newState: Int) {
+                    userDraggingMessages = newState == RecyclerView.SCROLL_STATE_DRAGGING
+                    if (newState == RecyclerView.SCROLL_STATE_IDLE) {
+                        followBottom = isNearBottom()
+                    }
+
+                    val now = SystemClock.uptimeMillis()
+                    val sinceTouch = now - lastUserTouchUptime
+                    if (!userDraggingMessages && newState == RecyclerView.SCROLL_STATE_SETTLING && sinceTouch > 400L) {
+                        dumpScrollState("NonTouch state->SETTLING sinceTouch=${sinceTouch}ms")
+                    }
+                }
+
+                override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                    if (DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST) {
+                        return
+                    }
+                    val now = SystemClock.uptimeMillis()
+                    val sinceTouch = now - lastUserTouchUptime
+
+                    val anchorView = try {
+                        recyclerView.getChildAt(0)
+                    } catch (_: Exception) {
+                        null
+                    }
+                    val anchorPos = try {
+                        if (anchorView != null) recyclerView.getChildAdapterPosition(anchorView) else RecyclerView.NO_POSITION
+                    } catch (_: Exception) {
+                        RecyclerView.NO_POSITION
+                    }
+                    val anchorTop = try {
+                        anchorView?.top ?: 0
+                    } catch (_: Exception) {
+                        0
+                    }
+
+                    val offsetNow = try {
+                        recyclerView.computeVerticalScrollOffset()
+                    } catch (_: Exception) {
+                        -1
+                    }
+
+                    // Anchor-based jump detection (more reliable than computeVerticalScrollOffset on variable-height lists).
+                    if (!userDraggingMessages && dy != 0 && lastAnchorPos != RecyclerView.NO_POSITION && anchorPos != RecyclerView.NO_POSITION) {
+                        val dPos = anchorPos - lastAnchorPos
+                        val dTop = anchorTop - lastAnchorTop
+                        // When the first visible item changes (dPos != 0), dTop can jump by an entire item height
+                        // and that is normal. Only treat it as a jump when the direction is inconsistent.
+                        val posDirMismatch = (dy > 0 && dPos < 0) || (dy < 0 && dPos > 0)
+                        // Only evaluate top-direction mismatch when the anchor item itself did not change.
+                        val topDirMismatch = (dPos == 0) && ((dy > 0 && dTop > 200) || (dy < 0 && dTop < -200))
+                        if (sinceTouch > 200L && (posDirMismatch || topDirMismatch)) {
+                            dumpScrollState(
+                                "AnchorJump dy=$dy dPos=$dPos dTop=$dTop anchorPos=$anchorPos"
+                            )
+                        }
+                    }
+
+                    // Detect anchor/offset jumps: offset changes direction or magnitude doesn't match dy.
+                    if (!userDraggingMessages && dy != 0 && lastScrollOffset >= 0 && offsetNow >= 0) {
+                        val dOffset = offsetNow - lastScrollOffset
+                        val dirMismatch = (dy > 0 && dOffset < -50) || (dy < 0 && dOffset > 50)
+                        if (sinceTouch > 200L && dirMismatch) {
+                            dumpScrollState(
+                                "OffsetJump dy=$dy dOffset=$dOffset sinceTouch=${sinceTouch}ms"
+                            )
+                        }
+                    }
+
+                    // Fling inertia after ACTION_UP is expected; only warn when no recent touch and not settling.
+                    val stateNow = try {
+                        recyclerView.scrollState
+                    } catch (_: Exception) {
+                        -1
+                    }
+                    if (!userDraggingMessages && sinceTouch > 1200L && dy != 0 && stateNow != RecyclerView.SCROLL_STATE_SETTLING) {
+                        dumpScrollState("NonTouch onScrolled dy=$dy sinceTouch=${sinceTouch}ms")
+                    }
+
+                    lastScrollOffset = offsetNow
+                    lastScrollUptime = now
+
+                    lastAnchorPos = anchorPos
+                    lastAnchorTop = anchorTop
+                }
+            })
+        } catch (_: Exception) {
+        }
 
         try {
             val history = ChatEventBus.snapshotMessages()
@@ -239,6 +420,7 @@ class ChatActivity : ComponentActivity() {
                                 return@launch
                             }
                             appendText(MessageRole.USER, text)
+                            followBottom = true
                             scrollToBottom()
                             runPythonTask(text)
                         }
@@ -291,6 +473,7 @@ class ChatActivity : ComponentActivity() {
                             return@collect
                         }
                         appendText(MessageRole.USER, text)
+                        followBottom = true
                         scrollToBottom()
                         runPythonTask(text)
                         appendText(MessageRole.AI, "正在为您执行...")
@@ -303,7 +486,9 @@ class ChatActivity : ComponentActivity() {
                     is ChatEventBus.Event.AppendToLastText -> {
                         runOnUiThread {
                             if (adapter.appendToLastText(ev.role, ev.text)) {
-                                rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
+                                if (!DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST && isRunningTask && followBottom && !userDraggingMessages) {
+                                    rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
+                                }
                             } else {
                                 appendText(ev.role, ev.text)
                             }
@@ -425,7 +610,12 @@ class ChatActivity : ComponentActivity() {
                 val ime = insets.getInsets(Type.ime())
                 v.updatePadding(top = bars.top, bottom = maxOf(ime.bottom, bars.bottom))
                 if (insets.isVisible(Type.ime())) {
-                    scrollToBottom()
+                    if (followBottom && !userDraggingMessages) {
+                        Log.d(scrollDebugTag, "IME visible -> scrollToBottom at ${SystemClock.uptimeMillis()}")
+                        if (!DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST) {
+                            scrollToBottom()
+                        }
+                    }
                 }
                 insets
             }
@@ -436,11 +626,49 @@ class ChatActivity : ComponentActivity() {
     }
 
     private fun scrollToBottom() {
+        if (DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST) return
         runOnUiThread {
             val last = adapter.getItemCountSafe() - 1
             if (last >= 0) {
+                try {
+                    val st = Throwable().stackTrace
+                        .drop(1)
+                        .take(6)
+                        .joinToString(" | ") { "${it.className.substringAfterLast('.')}#${it.methodName}:${it.lineNumber}" }
+                    Log.d(scrollDebugTag, "scrollToBottom -> scrollToPosition($last) followBottom=$followBottom dragging=$userDraggingMessages t=${SystemClock.uptimeMillis()} stack=$st")
+                } catch (_: Exception) {
+                }
                 rvMessages.post { rvMessages.scrollToPosition(last) }
             }
+        }
+    }
+
+    private fun isNearBottom(): Boolean {
+        val lm = rvMessages.layoutManager as? LinearLayoutManager ?: return true
+        val last = adapter.getItemCountSafe() - 1
+        if (last < 0) return true
+        val lastVisible = lm.findLastVisibleItemPosition()
+        return lastVisible >= (last - 1)
+    }
+
+    private fun dumpScrollState(reason: String) {
+        if (DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST) return
+        try {
+            val lm = rvMessages.layoutManager as? LinearLayoutManager
+            val first = lm?.findFirstVisibleItemPosition() ?: -1
+            val last = lm?.findLastVisibleItemPosition() ?: -1
+            val offset = try {
+                rvMessages.computeVerticalScrollOffset()
+            } catch (_: Exception) {
+                -1
+            }
+            val state = try {
+                rvMessages.scrollState
+            } catch (_: Exception) {
+                -1
+            }
+            Log.w(scrollDebugTag, "${reason} t=${SystemClock.uptimeMillis()} state=$state dragging=$userDraggingMessages followBottom=$followBottom first=$first last=$last offset=$offset")
+        } catch (_: Exception) {
         }
     }
 
@@ -878,33 +1106,42 @@ class ChatActivity : ComponentActivity() {
 
     private fun stopHoldToTalk(source: String) {
         if (!isRecordingVoice) return
-        val audio = recordingFile
-        stopRecordingInternal(cancel = false)
 
         val durMs = (System.currentTimeMillis() - holdDownAtMs).coerceAtLeast(0L)
-        if (durMs < 2_000L) {
-            try {
-                audio?.delete()
-            } catch (_: Exception) {
-            }
-            hideVoiceOverlay()
-            Toast.makeText(this, VoicePromptText.TOO_SHORT_TOAST, Toast.LENGTH_SHORT).show()
-            FloatingStatusService.setIdle(this, "等待指令")
-            return
-        }
+        val audio = recordingFile
 
         showVoiceOverlayRecognizing()
 
-        if (audio == null || !audio.exists() || audio.length() <= 0L) {
-            appendText(MessageRole.ACTION, VoicePromptText.INVALID_FILE)
-            FloatingStatusService.setIdle(this, "没听清，请重试")
-            hideVoiceOverlay()
-            return
-        }
-
-        FloatingStatusService.update(this, VoicePromptText.TRANSCRIBING)
-
         lifecycleScope.launch {
+            withContext(Dispatchers.IO) {
+                try {
+                    stopRecordingInternal(cancel = false)
+                } catch (_: Exception) {
+                }
+            }
+
+            if (durMs < 2_000L) {
+                withContext(Dispatchers.IO) {
+                    try {
+                        audio?.delete()
+                    } catch (_: Exception) {
+                    }
+                }
+                hideVoiceOverlay()
+                Toast.makeText(this@ChatActivity, VoicePromptText.TOO_SHORT_TOAST, Toast.LENGTH_SHORT).show()
+                FloatingStatusService.setIdle(this@ChatActivity, "等待指令")
+                return@launch
+            }
+
+            if (audio == null || !audio.exists() || audio.length() <= 0L) {
+                appendText(MessageRole.ACTION, VoicePromptText.INVALID_FILE)
+                FloatingStatusService.setIdle(this@ChatActivity, "没听清，请重试")
+                hideVoiceOverlay()
+                return@launch
+            }
+
+            FloatingStatusService.update(this@ChatActivity, VoicePromptText.TRANSCRIBING)
+
             val text = withContext(Dispatchers.IO) {
                 try {
                     if (!Python.isStarted()) {
@@ -937,6 +1174,8 @@ class ChatActivity : ComponentActivity() {
                 appendText(MessageRole.USER, trimmed)
                 inputText.value = ""
                 sendEnabled.value = false
+                followBottom = true
+                scrollToBottom()
                 runPythonTask(trimmed)
             }
         }
@@ -1161,7 +1400,9 @@ class ChatActivity : ComponentActivity() {
                 text = text,
             )
             adapter.submitAppend(m)
-            rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
+            if (!DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST && isRunningTask && followBottom && !userDraggingMessages) {
+                rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
+            }
         }
     }
 
@@ -1214,7 +1455,9 @@ class ChatActivity : ComponentActivity() {
             // 操作描述（OPERATION）单独成一条消息，不与其他类型合并
             val shouldMerge = (isRunningTask || mergeStreamAfterStop) && kind == lastActionStreamKind && kind != "OPERATION"
             if (shouldMerge && adapter.appendToLastText(MessageRole.ACTION, text)) {
-                rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
+                if (!DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST && isRunningTask && followBottom && !userDraggingMessages) {
+                    rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
+                }
                 return@runOnUiThread
             }
             val m = ChatMessage(
@@ -1225,7 +1468,9 @@ class ChatActivity : ComponentActivity() {
             )
             adapter.submitAppend(m)
             lastActionStreamKind = classified.nextLastKind
-            rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
+            if (!DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST && isRunningTask && followBottom && !userDraggingMessages) {
+                rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
+            }
         }
     }
 
@@ -1238,7 +1483,9 @@ class ChatActivity : ComponentActivity() {
             // 合并策略：当任务执行中，且最后一条是 AI 文本，则把内容拼接到最后一条；
             // 否则创建新气泡。
             if ((isRunningTask || mergeStreamAfterStop) && kind == lastAiStreamKind && adapter.appendToLastText(MessageRole.AI, text)) {
-                rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
+                if (!DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST && isRunningTask && followBottom && !userDraggingMessages) {
+                    rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
+                }
                 return@runOnUiThread
             }
             val m = ChatMessage(
@@ -1249,7 +1496,9 @@ class ChatActivity : ComponentActivity() {
             )
             adapter.submitAppend(m)
             lastAiStreamKind = classified.nextLastKind
-            rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
+            if (!DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST && isRunningTask && followBottom && !userDraggingMessages) {
+                rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
+            }
         }
     }
 
@@ -1267,7 +1516,9 @@ class ChatActivity : ComponentActivity() {
                 imageBytes = bytes,
             )
             adapter.submitAppend(m)
-            rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
+            if (!DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST && isRunningTask && followBottom && !userDraggingMessages) {
+                rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
+            }
         }
     }
 
@@ -1527,6 +1778,8 @@ class ChatActivity : ComponentActivity() {
     }
 
     companion object {
+        private const val DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST = false
+
         const val EXTRA_CONFIRM_REDIRECT_MESSAGE = "extra_confirm_redirect_message"
         const val EXTRA_OVERLAY_MIC_ACTION = "extra_overlay_mic_action"
     }

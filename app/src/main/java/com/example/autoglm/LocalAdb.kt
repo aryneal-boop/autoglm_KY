@@ -231,11 +231,12 @@ internal object LocalAdb {
             val readerThread = thread(start = true) {
                 try {
                     val buf = ByteArray(32 * 1024)
-                    val input = process.inputStream
-                    while (true) {
-                        val n = input.read(buf)
-                        if (n <= 0) break
-                        out.write(buf, 0, n)
+                    process.inputStream.use { input ->
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n <= 0) break
+                            out.write(buf, 0, n)
+                        }
                     }
                 } catch (_: Exception) {
                 }
@@ -534,6 +535,10 @@ object AdbBridge {
         return true
     }
 
+    private fun validateScreenshotPngAllowBlack(bytes: ByteArray): Boolean {
+        return isLikelyValidPng(bytes)
+    }
+
     private fun tryScreencapBytes(ctx: Context, adbExecPath: String, displayId: Int?): ByteArray {
         val args = ArrayList<String>()
         args.addAll(listOf("exec-out", "screencap"))
@@ -607,6 +612,31 @@ object AdbBridge {
         } else {
             val b = tryCmdDisplayGetScreenshotBytes(ctx, adbExecPath, displayId)
             if (b.isNotEmpty() && validateScreenshotPng(b)) b else ByteArray(0)
+        }
+
+        if (bytes.isEmpty()) return ""
+        return try {
+            Base64.encodeToString(bytes, Base64.NO_WRAP)
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    @JvmStatic
+    fun screencapPngBase64AllowBlack(displayId: Int?): String {
+        val ctx = AppState.getAppContext() ?: return ""
+        val adbExecPath = try {
+            LocalAdb.resolveAdbExecPath(ctx)
+        } catch (_: Exception) {
+            "adb"
+        }
+
+        val a = tryScreencapBytes(ctx, adbExecPath, displayId)
+        val bytes = if (a.isNotEmpty() && validateScreenshotPngAllowBlack(a)) {
+            a
+        } else {
+            val b = tryCmdDisplayGetScreenshotBytes(ctx, adbExecPath, displayId)
+            if (b.isNotEmpty() && validateScreenshotPngAllowBlack(b)) b else ByteArray(0)
         }
 
         if (bytes.isEmpty()) return ""
