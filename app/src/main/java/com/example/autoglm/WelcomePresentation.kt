@@ -15,9 +15,5 @@ class WelcomePresentation(
         setContentView(R.layout.presentation_welcome)
         setCancelable(true)
         setCanceledOnTouchOutside(true)
-
-        window?.decorView?.postDelayed({
-            runCatching { dismiss() }
-        }, 1200L)
     }
 }

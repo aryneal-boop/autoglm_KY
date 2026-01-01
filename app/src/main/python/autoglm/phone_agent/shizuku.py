@@ -410,6 +410,8 @@ def launch_app(app_name: str, device_id=None, delay: float | None = None) -> boo
         if component:
             candidates.extend(
                 [
+                    f"cmd activity start-activity --user 0 --display {int(did)} --windowingMode 1 --activity-reorder-to-front -n {component} -f {flags}",
+                    f"cmd activity start-activity --user 0 --display {int(did)} --windowingMode 1 -n {component} -f {flags}",
                     f"cmd activity start-activity --user 0 --display {int(did)} --activity-reorder-to-front -n {component} -f {flags}",
                     f"cmd activity start-activity --user 0 --display {int(did)} -n {component} -f {flags}",
                     f"am start --user 0 -n {component} --display {int(did)} --activity-reorder-to-front -f {flags}",

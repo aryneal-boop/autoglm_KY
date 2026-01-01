@@ -255,6 +255,7 @@ object VirtualDisplayController {
                 val component = "${appContext.packageName}/.WelcomeActivity"
                 val flags = 0x10000000
                 val candidates = listOf(
+                    "cmd activity start-activity --user 0 --display $displayId --windowingMode 1 -n $component -f $flags",
                     "cmd activity start-activity --user 0 --display $displayId -n $component -f $flags",
                     "am start --user 0 --display $displayId -n $component -f $flags",
                     "am start --display $displayId -n $component -f $flags",

@@ -1652,7 +1652,21 @@ class ChatActivity : ComponentActivity() {
                     onTapIndicator = { x, y ->
                         // 在点击坐标显示圆形指示器
                         runOnUiThread {
-                            TapIndicatorService.showAt(this@ChatActivity, x, y)
+                            try {
+                                val execEnv = ConfigManager(this@ChatActivity).getExecutionEnvironment()
+                                if (execEnv == ConfigManager.EXEC_ENV_VIRTUAL) {
+                                    val did = VirtualDisplayController.getDisplayId() ?: 0
+                                    if (did > 0) {
+                                        TapIndicatorService.showAtOnDisplay(this@ChatActivity, x, y, did)
+                                    } else {
+                                        TapIndicatorService.showAt(this@ChatActivity, x, y)
+                                    }
+                                } else {
+                                    TapIndicatorService.showAt(this@ChatActivity, x, y)
+                                }
+                            } catch (_: Exception) {
+                                TapIndicatorService.showAt(this@ChatActivity, x, y)
+                            }
                         }
                     },
                 )

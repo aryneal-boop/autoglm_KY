@@ -17,6 +17,7 @@ import android.os.Looper
 import android.view.View
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
+import android.hardware.display.DisplayManager
 
 /**
  * 点击指示器悬浮窗服务
@@ -44,39 +45,83 @@ class TapIndicatorService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val x = intent?.getFloatExtra(EXTRA_X, -1f) ?: -1f
         val y = intent?.getFloatExtra(EXTRA_Y, -1f) ?: -1f
+        val displayId = intent?.getIntExtra(EXTRA_DISPLAY_ID, 0) ?: 0
 
         if (x >= 0 && y >= 0) {
-            showIndicator(x, y)
+            showIndicator(x, y, displayId)
         }
 
         return START_NOT_STICKY
     }
 
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density + 0.5f).toInt()
+    private fun mainDisplayContext(): Context = runCatching {
+        val dm = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+        val d0 = dm.getDisplay(0) ?: return@runCatching this as Context
+        createDisplayContext(d0)
+    }.getOrElse {
+        this
+    }
+
+    private fun displayContext(displayId: Int): Context {
+        if (displayId <= 0) return mainDisplayContext()
+        return runCatching {
+            val dm = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+            val d = dm.getDisplay(displayId) ?: return@runCatching mainDisplayContext()
+            createDisplayContext(d)
+        }.getOrElse {
+            mainDisplayContext()
+        }
+    }
+
+    private fun windowManagerForDisplay(displayId: Int): WindowManager {
+        return try {
+            val ctx = displayContext(displayId)
+            ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        } catch (_: Exception) {
+            windowManager
+        }
+    }
+
+    private fun dp(ctx: Context, v: Int): Int {
+        val d = try {
+            ctx.resources.displayMetrics.density
+        } catch (_: Exception) {
+            resources.displayMetrics.density
+        }
+        return (v * d + 0.5f).toInt()
+    }
 
     private fun statusBarHeightPx(): Int {
         return try {
-            val resId = resources.getIdentifier("status_bar_height", "dimen", "android")
-            if (resId > 0) resources.getDimensionPixelSize(resId) else 0
+            val r = mainDisplayContext().resources
+            val resId = r.getIdentifier("status_bar_height", "dimen", "android")
+            if (resId > 0) r.getDimensionPixelSize(resId) else 0
         } catch (_: Exception) {
             0
         }
     }
 
-    private fun showIndicator(x: Float, y: Float) {
+    private fun showIndicator(x: Float, y: Float, displayId: Int) {
         mainHandler.post {
             try {
-                val radiusPx = dp(indicatorRadiusDp)
+                val ctx = displayContext(displayId)
+                val wm = windowManagerForDisplay(displayId)
+                val radiusPx = dp(ctx, indicatorRadiusDp)
                 val sizePx = radiusPx * 2
 
-                // ADB 截图坐标通常包含状态栏；overlay 在部分机型上 (0,0) 可能从状态栏下方开始。
-                // 这里做一次状态栏高度补偿，尽量保证圆心对齐点击坐标。
-                val sb = statusBarHeightPx()
-                val adjX = (x - dp(3)).coerceAtLeast(0f)
-                val adjY = (y + dp(38) - sb).coerceAtLeast(0f)
+                val (adjX, adjY) = if (displayId <= 0) {
+                    // 主屏模式：保持原有坐标补偿逻辑不变。
+                    val sb = statusBarHeightPx()
+                    val ax = (x - dp(ctx, 3)).coerceAtLeast(0f)
+                    val ay = (y + dp(ctx, 38) - sb).coerceAtLeast(0f)
+                    ax to ay
+                } else {
+                    // 虚拟隔离模式：不做任何偏移，确保圆心严格对齐注入坐标。
+                    x.coerceAtLeast(0f) to y.coerceAtLeast(0f)
+                }
 
                 // 创建圆形指示器 View
-                val indicatorView = CircleIndicatorView(this, indicatorColor, strokeColor, radiusPx.toFloat())
+                val indicatorView = CircleIndicatorView(ctx, indicatorColor, strokeColor, radiusPx.toFloat())
                 indicatorView.alpha = 1f
 
                 val params = WindowManager.LayoutParams().apply {
@@ -100,11 +145,11 @@ class TapIndicatorService : Service() {
                     gravity = android.view.Gravity.TOP or android.view.Gravity.START
                 }
 
-                windowManager.addView(indicatorView, params)
+                wm.addView(indicatorView, params)
 
                 // 启动渐变消失动画（1秒后开始，持续500ms消失）
                 mainHandler.postDelayed({
-                    fadeOutAndRemove(indicatorView)
+                    fadeOutAndRemove(wm, indicatorView)
                 }, 500L)
 
             } catch (e: Exception) {
@@ -113,7 +158,7 @@ class TapIndicatorService : Service() {
         }
     }
 
-    private fun fadeOutAndRemove(view: View) {
+    private fun fadeOutAndRemove(wm: WindowManager, view: View) {
         try {
             view.animate().cancel()
         } catch (_: Exception) {
@@ -126,10 +171,10 @@ class TapIndicatorService : Service() {
             .setListener(object : AnimatorListenerAdapter() {
                 override fun onAnimationEnd(animation: Animator) {
                     try {
-                        windowManager.removeViewImmediate(view)
+                        wm.removeViewImmediate(view)
                     } catch (_: Exception) {
                         try {
-                            windowManager.removeView(view)
+                            wm.removeView(view)
                         } catch (_: Exception) {
                         }
                     }
@@ -176,6 +221,7 @@ class TapIndicatorService : Service() {
     companion object {
         private const val EXTRA_X = "extra_x"
         private const val EXTRA_Y = "extra_y"
+        private const val EXTRA_DISPLAY_ID = "extra_display_id"
 
         /**
          * 在指定坐标显示点击指示器
@@ -187,6 +233,15 @@ class TapIndicatorService : Service() {
             val intent = Intent(context, TapIndicatorService::class.java).apply {
                 putExtra(EXTRA_X, x)
                 putExtra(EXTRA_Y, y)
+            }
+            context.startService(intent)
+        }
+
+        fun showAtOnDisplay(context: Context, x: Float, y: Float, displayId: Int) {
+            val intent = Intent(context, TapIndicatorService::class.java).apply {
+                putExtra(EXTRA_X, x)
+                putExtra(EXTRA_Y, y)
+                putExtra(EXTRA_DISPLAY_ID, displayId)
             }
             context.startService(intent)
         }
