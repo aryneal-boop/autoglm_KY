@@ -6,11 +6,29 @@ object TaskStreamClassifier {
         val kind: String,
         val text: String,
         val nextLastKind: String = kind,
+        val stepIndex: Int? = null,
     )
+
+    private val STEP_RE = Regex("^第\\s*(\\d{1,3})\\s*步[：:]\\s*(.*)$")
+    private val ACTION_TAG_RE = Regex("^\\[\\[ACTION(?::([^\\]]+))?]]\\s*(.*)$")
 
     fun classifyAction(deltaOrFull: String, lastActionStreamKind: String?): Classified {
         var kind: String
+        var stepIndex: Int? = null
         val raw = deltaOrFull
+
+        val stepMatch = STEP_RE.find(raw.trim())
+        if (stepMatch != null) {
+            kind = "STEP"
+            stepIndex = try {
+                stepMatch.groupValues[1].toInt()
+            } catch (_: Exception) {
+                null
+            }
+            // 保留完整“第N步”文本，确保 UI 能明确显示步骤边界。
+            return Classified(kind = kind, text = raw, nextLastKind = kind, stepIndex = stepIndex)
+        }
+
         val text = when {
             raw.startsWith("[[STATUS]]") -> {
                 kind = "STATUS"
@@ -22,9 +40,36 @@ object TaskStreamClassifier {
                 raw.removePrefix("[[PLAN]]")
             }
 
-            raw.startsWith("[[ACTION]]") -> {
-                kind = "OPERATION"
-                raw.removePrefix("[[ACTION]]")
+            ACTION_TAG_RE.containsMatchIn(raw) -> {
+                val m = ACTION_TAG_RE.find(raw)
+                val tag = m?.groupValues?.getOrNull(1)?.orEmpty()?.trim().orEmpty()
+                val rest = m?.groupValues?.getOrNull(2)?.orEmpty().orEmpty()
+                val normalized = tag
+                    .replace(" ", "_")
+                    .replace("-", "_")
+                    .uppercase()
+                kind = if (normalized.isNotEmpty()) "OP_$normalized" else "OPERATION"
+                rest.ifEmpty { raw }
+            }
+
+            raw.contains("正在查阅屏幕") -> {
+                kind = "SCREEN_READ"
+                raw
+            }
+
+            raw.contains("正在调用模型") || raw.contains("调用模型") -> {
+                kind = "CALL_MODEL"
+                raw
+            }
+
+            raw.contains("截图显示") || raw.contains("截图") -> {
+                kind = "SCREENSHOT"
+                raw
+            }
+
+            raw.contains("等待") && (raw.contains("后继续") || raw.contains("s", ignoreCase = true)) -> {
+                kind = "WAIT"
+                raw
             }
 
             else -> {
@@ -33,11 +78,7 @@ object TaskStreamClassifier {
             }
         }
 
-        return Classified(
-            kind = kind,
-            text = text,
-            nextLastKind = kind,
-        )
+        return Classified(kind = kind, text = text, nextLastKind = kind, stepIndex = stepIndex)
     }
 
     fun classifyAssistant(deltaOrFull: String): Classified {

@@ -6,6 +6,7 @@ import android.os.Binder
 import android.os.Build
 import android.os.IInterface
 import android.util.Log
+import android.view.Display
 import java.lang.reflect.Proxy
 
 object ShizukuVirtualDisplayEngine {
@@ -16,7 +17,7 @@ object ShizukuVirtualDisplayEngine {
         val name: String = "AutoGLM-Virtual",
         val width: Int = 1080,
         val height: Int = 1920,
-        val dpi: Int = 440,
+        val dpi: Int = 142,
         val refreshRate: Float = 0f,
         val rotatesWithContent: Boolean = false,
         val ownerPackage: String = "com.android.shell",
@@ -239,8 +240,6 @@ object ShizukuVirtualDisplayEngine {
     private fun createVirtualDisplay(args: Args, surface: Surface): Pair<Int, Any> {
         val displayManager = ShizukuServiceHub.getDisplayManager()
 
-        val flags = buildFlags(rotatesWithContent = args.rotatesWithContent)
-        val config = buildVirtualDisplayConfig(args, surface, flags)
         val callback = createVirtualDisplayCallbackProxy()
 
         val callbackInterfaceClass = Class.forName("android.hardware.display.IVirtualDisplayCallback")
@@ -254,17 +253,96 @@ object ShizukuVirtualDisplayEngine {
         } ?: throw NoSuchMethodException("IDisplayManager.createVirtualDisplay(VirtualDisplayConfig, IVirtualDisplayCallback, IMediaProjection, String)")
 
         val packageName = args.ownerPackage
-        val id = (createMethod.invoke(displayManager, config, callback, null, packageName) as Int)
+        val flags = buildFlags(rotatesWithContent = args.rotatesWithContent)
+        val trustedFlag = getVirtualDisplayFlagBestEffort("VIRTUAL_DISPLAY_FLAG_TRUSTED", fallback = (1 shl 10))
+        val flagsWithoutTrusted = if (trustedFlag != null) (flags and trustedFlag.inv()) else flags
+        val id = try {
+            val config = buildVirtualDisplayConfig(args, surface, flags)
+            (createMethod.invoke(displayManager, config, callback, null, packageName) as Int)
+        } catch (t: Throwable) {
+            val cause = (t as? java.lang.reflect.InvocationTargetException)?.targetException ?: t
+            if (cause is SecurityException && trustedFlag != null && (flags and trustedFlag) != 0) {
+                Log.w(TAG, "createVirtualDisplay with TRUSTED failed, retry without TRUSTED", cause)
+                val config = buildVirtualDisplayConfig(args, surface, flagsWithoutTrusted)
+                (createMethod.invoke(displayManager, config, callback, null, packageName) as Int)
+            } else {
+                throw t
+            }
+        }
         Log.i(TAG, "createVirtualDisplay ok: displayId=$id flags=$flags")
+
+        applyImePolicyBestEffort(id)
+
         return id to callback
     }
 
+    private fun applyImePolicyBestEffort(displayId: Int) {
+        runCatching {
+            val wm = ShizukuServiceHub.getWindowManager()
+            val wmClass = wm.javaClass
+
+            val shouldShowIme = wmClass.methods.firstOrNull { m ->
+                m.name == "setShouldShowIme" &&
+                    m.parameterTypes.size == 2 &&
+                    m.parameterTypes[0] == Int::class.javaPrimitiveType &&
+                    m.parameterTypes[1] == Boolean::class.javaPrimitiveType
+            }
+            if (shouldShowIme != null) {
+                shouldShowIme.invoke(wm, displayId, true)
+            }
+
+            val DISPLAY_IME_POLICY_LOCAL = 0
+            val DISPLAY_IME_POLICY_FALLBACK_DISPLAY = 1
+            val setImePolicy = wmClass.methods.firstOrNull { m ->
+                m.name == "setDisplayImePolicy" &&
+                    m.parameterTypes.size == 2 &&
+                    m.parameterTypes[0] == Int::class.javaPrimitiveType &&
+                    m.parameterTypes[1] == Int::class.javaPrimitiveType
+            }
+            if (setImePolicy != null) {
+                setImePolicy.invoke(wm, Display.DEFAULT_DISPLAY, DISPLAY_IME_POLICY_FALLBACK_DISPLAY)
+                try {
+                    setImePolicy.invoke(wm, displayId, DISPLAY_IME_POLICY_LOCAL)
+                } catch (t: Throwable) {
+                    setImePolicy.invoke(wm, Display.DEFAULT_DISPLAY, DISPLAY_IME_POLICY_LOCAL)
+                    throw t
+                }
+            }
+        }.onFailure { t ->
+            Log.w(TAG, "applyImePolicyBestEffort failed: displayId=$displayId", t)
+            runCatching {
+                if (!com.example.autoglm.ShizukuBridge.pingBinder() || !com.example.autoglm.ShizukuBridge.hasPermission()) return@runCatching
+
+                val DISPLAY_IME_POLICY_LOCAL = 0
+                val candidates = listOf(
+                    "cmd window set-display-ime-policy $displayId $DISPLAY_IME_POLICY_LOCAL",
+                    "cmd window setDisplayImePolicy $displayId $DISPLAY_IME_POLICY_LOCAL",
+                    "wm set-display-ime-policy $displayId $DISPLAY_IME_POLICY_LOCAL",
+                    "wm setDisplayImePolicy $displayId $DISPLAY_IME_POLICY_LOCAL",
+                    "settings put global force_desktop_mode_on_external_displays 1",
+                    "settings put global enable_freeform_support 1",
+                    "wm set-pc-mode 1",
+                )
+                for (c in candidates) {
+                    val r = com.example.autoglm.ShizukuBridge.execResult(c)
+                    if (r.exitCode == 0) break
+                }
+            }
+        }
+    }
+
     private fun buildFlags(rotatesWithContent: Boolean): Int {
-        val dm = Class.forName("android.hardware.display.DisplayManager")
-        val publicFlag = dm.getField("VIRTUAL_DISPLAY_FLAG_PUBLIC").getInt(null)
-        val ownContentOnlyFlag = dm.getField("VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY").getInt(null)
+        val publicFlag = getVirtualDisplayFlagBestEffort("VIRTUAL_DISPLAY_FLAG_PUBLIC", fallback = null) ?: 0
+        val ownContentOnlyFlag = getVirtualDisplayFlagBestEffort("VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY", fallback = null) ?: 0
+        val presentationFlag = getVirtualDisplayFlagBestEffort("VIRTUAL_DISPLAY_FLAG_PRESENTATION", fallback = (1 shl 1)) ?: 0
+        val trustedFlag = getVirtualDisplayFlagBestEffort("VIRTUAL_DISPLAY_FLAG_TRUSTED", fallback = (1 shl 10))
 
         var flags = publicFlag or ownContentOnlyFlag
+
+        flags = flags or presentationFlag
+        if (trustedFlag != null) {
+            flags = flags or trustedFlag
+        }
 
         // supports-touch (hidden in some versions)
         flags = flags or (1 shl 6)
@@ -276,8 +354,7 @@ object ShizukuVirtualDisplayEngine {
         }
 
         if (Build.VERSION.SDK_INT >= 33) {
-            // trusted / own display group / always unlocked / touch feedback disabled
-            flags = flags or (1 shl 10)
+            // own display group / always unlocked / touch feedback disabled
             flags = flags or (1 shl 11)
             flags = flags or (1 shl 12)
             flags = flags or (1 shl 13)
@@ -288,6 +365,13 @@ object ShizukuVirtualDisplayEngine {
         }
 
         return flags
+    }
+
+    private fun getVirtualDisplayFlagBestEffort(name: String, fallback: Int?): Int? {
+        return runCatching {
+            val dm = Class.forName("android.hardware.display.DisplayManager")
+            dm.getField(name).getInt(null)
+        }.getOrElse { fallback }
     }
 
     private fun buildVirtualDisplayConfig(args: Args, surface: Surface, flags: Int): Any {

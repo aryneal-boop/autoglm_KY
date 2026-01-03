@@ -15,7 +15,7 @@ object ShizukuVirtualDisplaySurfaceStreamer {
         val name: String = "AutoGLM-Virtual-Surface",
         val width: Int = 1080,
         val height: Int = 1920,
-        val dpi: Int = 440,
+        val dpi: Int = 142,
         val refreshRate: Float = 0f,
         val rotatesWithContent: Boolean = false,
         val ownerPackage: String = "com.android.shell",
@@ -41,9 +41,6 @@ object ShizukuVirtualDisplaySurfaceStreamer {
 
             stop()
             this.surface = surface
-
-            val flags = buildFlags(rotatesWithContent = args.rotatesWithContent)
-            val config = buildVirtualDisplayConfig(args, surface, flags)
             val callback = createVirtualDisplayCallbackProxy()
 
             val displayManager = ShizukuServiceHub.getDisplayManager()
@@ -58,7 +55,23 @@ object ShizukuVirtualDisplaySurfaceStreamer {
             } ?: throw NoSuchMethodException("IDisplayManager.createVirtualDisplay(VirtualDisplayConfig, IVirtualDisplayCallback, IMediaProjection, String)")
 
             val packageName = args.ownerPackage
-            val id = (createMethod.invoke(displayManager, config, callback, null, packageName) as Int)
+
+            val flags = buildFlags(rotatesWithContent = args.rotatesWithContent)
+            val trustedFlag = getVirtualDisplayFlagBestEffort("VIRTUAL_DISPLAY_FLAG_TRUSTED", fallback = (1 shl 10))
+            val flagsWithoutTrusted = if (trustedFlag != null) (flags and trustedFlag.inv()) else flags
+            val id = try {
+                val config = buildVirtualDisplayConfig(args, surface, flags)
+                (createMethod.invoke(displayManager, config, callback, null, packageName) as Int)
+            } catch (t: Throwable) {
+                val cause = (t as? java.lang.reflect.InvocationTargetException)?.targetException ?: t
+                if (cause is SecurityException && trustedFlag != null && (flags and trustedFlag) != 0) {
+                    Log.w(TAG, "createVirtualDisplay with TRUSTED failed, retry without TRUSTED", cause)
+                    val config = buildVirtualDisplayConfig(args, surface, flagsWithoutTrusted)
+                    (createMethod.invoke(displayManager, config, callback, null, packageName) as Int)
+                } else {
+                    throw t
+                }
+            }
 
             vdCallback = callback
             displayId = id
@@ -99,11 +112,17 @@ object ShizukuVirtualDisplaySurfaceStreamer {
     }
 
     private fun buildFlags(rotatesWithContent: Boolean): Int {
-        val dm = Class.forName("android.hardware.display.DisplayManager")
-        val publicFlag = dm.getField("VIRTUAL_DISPLAY_FLAG_PUBLIC").getInt(null)
-        val ownContentOnlyFlag = dm.getField("VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY").getInt(null)
+        val publicFlag = getVirtualDisplayFlagBestEffort("VIRTUAL_DISPLAY_FLAG_PUBLIC", fallback = null) ?: 0
+        val ownContentOnlyFlag = getVirtualDisplayFlagBestEffort("VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY", fallback = null) ?: 0
+        val presentationFlag = getVirtualDisplayFlagBestEffort("VIRTUAL_DISPLAY_FLAG_PRESENTATION", fallback = (1 shl 1)) ?: 0
+        val trustedFlag = getVirtualDisplayFlagBestEffort("VIRTUAL_DISPLAY_FLAG_TRUSTED", fallback = (1 shl 10))
 
         var flags = publicFlag or ownContentOnlyFlag
+
+        flags = flags or presentationFlag
+        if (trustedFlag != null) {
+            flags = flags or trustedFlag
+        }
 
         // supports-touch (hidden in some versions)
         flags = flags or (1 shl 6)
@@ -115,7 +134,6 @@ object ShizukuVirtualDisplaySurfaceStreamer {
         }
 
         if (Build.VERSION.SDK_INT >= 33) {
-            flags = flags or (1 shl 10)
             flags = flags or (1 shl 11)
             flags = flags or (1 shl 12)
             flags = flags or (1 shl 13)
@@ -126,6 +144,13 @@ object ShizukuVirtualDisplaySurfaceStreamer {
         }
 
         return flags
+    }
+
+    private fun getVirtualDisplayFlagBestEffort(name: String, fallback: Int?): Int? {
+        return runCatching {
+            val dm = Class.forName("android.hardware.display.DisplayManager")
+            dm.getField(name).getInt(null)
+        }.getOrElse { fallback }
     }
 
     private fun buildVirtualDisplayConfig(args: Args, surface: Surface, flags: Int): Any {

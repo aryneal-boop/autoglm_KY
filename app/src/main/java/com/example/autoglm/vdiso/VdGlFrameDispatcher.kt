@@ -327,7 +327,11 @@ class VdGlFrameDispatcher {
             runCatching { EGL14.eglDestroySurface(d, old) }
         }
 
+        val oldSurface = previewSurface
         previewSurface = surface
+        if (oldSurface != null && oldSurface !== surface) {
+            runCatching { oldSurface.release() }
+        }
         if (surface == null) return
 
         val attrib = intArrayOf(EGL14.EGL_NONE)

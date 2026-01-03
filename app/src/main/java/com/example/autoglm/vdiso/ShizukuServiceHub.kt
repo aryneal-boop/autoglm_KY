@@ -44,4 +44,11 @@ object ShizukuServiceHub {
         val asInterface = stub.getMethod("asInterface", IBinder::class.java)
         return asInterface.invoke(null, binder)
     }
+
+    fun getWindowManager(): Any {
+        val binder = getService("window")
+        val stub = Class.forName("android.view.IWindowManager\$Stub")
+        val asInterface = stub.getMethod("asInterface", IBinder::class.java)
+        return asInterface.invoke(null, binder)
+    }
 }

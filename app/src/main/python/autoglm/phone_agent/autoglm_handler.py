@@ -236,13 +236,17 @@ class AutoGLMHandler:
                     action_name = action.get("action", "")
                     if meta == "finish":
                         plan = action.get("message") or "任务完成"
-                        _safe_call(self.callback, "on_action", f"[[ACTION]]完成：{plan}")
+                        # 完成也单独归类，便于 UI 拆分气泡。
+                        _safe_call(self.callback, "on_action", f"[[ACTION:FINISH]]完成：{plan}")
                     elif meta == "do":
                         # 格式化操作描述，便于 UI 显示
                         action_desc = self._format_action_description(action)
-                        _safe_call(self.callback, "on_action", f"[[ACTION]]{action_desc}")
+                        # 输出动作类型，便于 Kotlin 侧按 kind 拆分（点击/滑动/等待等必须独立气泡）。
+                        tag = (action_name or "OPERATION").strip().replace(" ", "_")
+                        _safe_call(self.callback, "on_action", f"[[ACTION:{tag}]]{action_desc}")
                     else:
-                        _safe_call(self.callback, "on_action", f"[[ACTION]]{action}")
+                        tag = (action_name or "OPERATION").strip().replace(" ", "_")
+                        _safe_call(self.callback, "on_action", f"[[ACTION:{tag}]]{action}")
                 except Exception:
                     _safe_call(self.callback, "on_action", "[[ACTION]]动作解析失败")
 

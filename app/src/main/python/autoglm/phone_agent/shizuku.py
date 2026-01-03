@@ -310,7 +310,13 @@ def tap(x: int, y: int, device_id=None, delay: float | None = None) -> None:
     _ = device_id
     did = _ensure_virtual_display_started()
     if did is not None:
-        _exec_text(f"input -d {int(did)} tap {int(x)} {int(y)}")
+        try:
+            from java import jclass
+
+            Vdc = jclass("com.example.autoglm.VirtualDisplayController")
+            Vdc.injectTapBestEffort(int(did), int(x), int(y))
+        except Exception:
+            _exec_text(f"input -d {int(did)} tap {int(x)} {int(y)}")
     else:
         _exec_text(f"input tap {int(x)} {int(y)}")
     time.sleep(delay if delay is not None else 0.15)
@@ -321,9 +327,15 @@ def swipe(start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int |
     dur = int(duration_ms) if duration_ms is not None else 600
     did = _ensure_virtual_display_started()
     if did is not None:
-        _exec_text(
-            f"input -d {int(did)} swipe {int(start_x)} {int(start_y)} {int(end_x)} {int(end_y)} {dur}"
-        )
+        try:
+            from java import jclass
+
+            Vdc = jclass("com.example.autoglm.VirtualDisplayController")
+            Vdc.injectSwipeBestEffort(int(did), int(start_x), int(start_y), int(end_x), int(end_y), int(dur))
+        except Exception:
+            _exec_text(
+                f"input -d {int(did)} swipe {int(start_x)} {int(start_y)} {int(end_x)} {int(end_y)} {dur}"
+            )
     else:
         _exec_text(f"input swipe {int(start_x)} {int(start_y)} {int(end_x)} {int(end_y)} {dur}")
     time.sleep(delay if delay is not None else 0.2)
@@ -333,7 +345,13 @@ def back(device_id=None, delay: float | None = None) -> None:
     _ = device_id
     did = _ensure_virtual_display_started()
     if did is not None:
-        _exec_text(f"input -d {int(did)} keyevent 4")
+        try:
+            from java import jclass
+
+            Vdc = jclass("com.example.autoglm.VirtualDisplayController")
+            Vdc.injectBackBestEffort(int(did))
+        except Exception:
+            _exec_text(f"input -d {int(did)} keyevent 4")
     else:
         _exec_text("input keyevent 4")
     time.sleep(delay if delay is not None else 0.2)
@@ -343,7 +361,13 @@ def home(device_id=None, delay: float | None = None) -> None:
     _ = device_id
     did = _ensure_virtual_display_started()
     if did is not None:
-        _exec_text(f"input -d {int(did)} keyevent 3")
+        try:
+            from java import jclass
+
+            Vdc = jclass("com.example.autoglm.VirtualDisplayController")
+            Vdc.injectHomeBestEffort(int(did))
+        except Exception:
+            _exec_text(f"input -d {int(did)} keyevent 3")
     else:
         _exec_text("input keyevent 3")
     time.sleep(delay if delay is not None else 0.2)

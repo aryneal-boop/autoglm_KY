@@ -2,7 +2,10 @@ package com.example.autoglm
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
@@ -84,6 +87,8 @@ class ChatActivity : ComponentActivity() {
 
     private val scrollDebugTag = "ChatScrollDebug"
 
+    private val enableScrollDebug: Boolean = false
+
     private var lastUserTouchUptime: Long = 0L
 
     private var lastScrollOffset: Int = -1
@@ -119,8 +124,158 @@ class ChatActivity : ComponentActivity() {
     private var lastActionStreamKind: String? = null
     private var lastAiStreamKind: String? = null
 
+    private val pendingUiAppends: MutableList<ChatMessage> = ArrayList()
+    private var pendingUiAppendFlushPosted: Boolean = false
+    private var lastProgrammaticScrollAtUptime: Long = 0L
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private var pendingAutoHideRunnable: Runnable? = null
+
+    private data class StreamAppendKey(val role: MessageRole, val kind: String?)
+
+    private val pendingAppendText: MutableMap<StreamAppendKey, StringBuilder> = HashMap()
+    @Volatile
+    private var pendingAppendScheduled = false
+    private val flushPendingAppendRunnable = Runnable {
+        pendingAppendScheduled = false
+        val entries = ArrayList(pendingAppendText.entries)
+        pendingAppendText.clear()
+
+        var anyUpdated = false
+        for ((k, sb) in entries) {
+            val role = k.role
+            val kind = k.kind
+            val delta = sb.toString()
+            if (delta.isEmpty()) continue
+            if (adapter.appendToLastText(role, kind, delta)) {
+                anyUpdated = true
+            } else {
+                appendTextInternal(role, delta, syncToEventBusBuffer = true, kind = kind)
+                // 流式期间如果创建了新气泡，需要立即落地到 adapter，避免后续 token 抢跑导致刷屏。
+                if (isRunningTask || mergeStreamAfterStop) {
+                    flushUiAppendsNow()
+                }
+                anyUpdated = true
+            }
+        }
+
+        if (anyUpdated) {
+            if (!DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST && isRunningTask && followBottom && !userDraggingMessages) {
+                rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
+            }
+        }
+    }
+
+    private fun scheduleFlushUiAppends() {
+        if (pendingUiAppendFlushPosted) return
+        pendingUiAppendFlushPosted = true
+        mainHandler.postDelayed({
+            pendingUiAppendFlushPosted = false
+            if (pendingUiAppends.isEmpty()) return@postDelayed
+            val batch = ArrayList(pendingUiAppends)
+            pendingUiAppends.clear()
+
+            adapter.submitAppendBatch(batch)
+
+            if (!DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST && isRunningTask && followBottom && !userDraggingMessages) {
+                val now = SystemClock.uptimeMillis()
+                if (now - lastProgrammaticScrollAtUptime >= 120L) {
+                    lastProgrammaticScrollAtUptime = now
+                    rvMessages.scrollToPosition(adapter.getItemCountSafe() - 1)
+                }
+            }
+        }, 50L)
+    }
+
+    private fun flushUiAppendsNow() {
+        try {
+            pendingUiAppendFlushPosted = false
+            if (pendingUiAppends.isEmpty()) return
+            val batch = ArrayList(pendingUiAppends)
+            pendingUiAppends.clear()
+            adapter.submitAppendBatch(batch)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun enqueueUiAppend(message: ChatMessage) {
+        pendingUiAppends.add(message)
+        scheduleFlushUiAppends()
+    }
+
+    private fun appendText(role: MessageRole, text: String) {
+        appendTextInternal(role, text, syncToEventBusBuffer = true, kind = null)
+    }
+
+    private fun appendTextInternal(role: MessageRole, text: String, syncToEventBusBuffer: Boolean, kind: String?) {
+        val t = text.trimEnd()
+        if (t.isEmpty()) return
+        if (syncToEventBusBuffer) {
+            ChatEventBus.recordText(role, t, kind = kind)
+        }
+        runOnUiThread {
+            val m = ChatMessage(
+                id = idGen.getAndIncrement(),
+                role = role,
+                type = MessageType.TEXT,
+                kind = kind,
+                text = t,
+            )
+            enqueueUiAppend(m)
+        }
+    }
+
+    private fun updateFloatingStatusFromAction(kind: String?, text: String) {
+        // 根据动作类型更新悬浮窗文案（若悬浮窗不可用则忽略）。
+        try {
+            val display = OverlayStatusTextMapper.map(kind, text) ?: text
+            FloatingStatusService.update(this@ChatActivity, display)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun updateAdbStatus() {
+        // 仅用于 UI 展示，不强制触发 connect/stop 等副作用。
+        lifecycleScope.launch {
+            val mode = getCurrentConnectMode()
+            val status = if (mode == ConfigManager.ADB_MODE_SHIZUKU) {
+                val ok = try {
+                    Shizuku.pingBinder() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+                } catch (_: Throwable) {
+                    false
+                }
+                if (ok) {
+                    "模式：Shizuku\n状态：已授权"
+                } else {
+                    "模式：Shizuku\n状态：未授权"
+                }
+            } else {
+                val last = try {
+                    ConfigManager(this@ChatActivity).getLastAdbEndpoint().trim()
+                } catch (_: Exception) {
+                    ""
+                }
+                if (last.isNotEmpty()) {
+                    "模式：无线调试\n最近：$last"
+                } else {
+                    "模式：无线调试\n状态：未连接"
+                }
+            }
+            runOnUiThread {
+                try {
+                    tvAdbStatus.text = status
+                } catch (_: Exception) {
+                }
+            }
+        }
+    }
+
+    private fun computeInternalAdbPath(): String {
+        val adbPath = File(filesDir, "bin/adb").absolutePath
+        val adbBinPath = File(filesDir, "bin/adb.bin").absolutePath
+        val adbBinFile = File(adbBinPath)
+        return if (adbBinFile.exists() && adbBinFile.length() > 0L) adbBinPath else adbPath
+    }
 
     private var stopReceiver: BroadcastReceiver? = null
 
@@ -134,7 +289,152 @@ class ChatActivity : ComponentActivity() {
     private var isRecordingVoice: Boolean = false
     private var isVoiceMode: Boolean = false
 
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private var audioFocusListener: AudioManager.OnAudioFocusChangeListener? = null
+
     private var holdDownAtMs: Long = 0L
+
+    private fun showVoiceOverlayListening() {
+        try {
+            voiceOverlay.visibility = View.VISIBLE
+            tvVoiceOverlay.text = VoicePromptText.LISTENING
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun showVoiceOverlayRecognizing() {
+        try {
+            voiceOverlay.visibility = View.VISIBLE
+            tvVoiceOverlay.text = VoicePromptText.RECOGNIZING
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun hideVoiceOverlay() {
+        try {
+            voiceOverlay.visibility = View.GONE
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun requestRecordingAudioFocus(): Boolean {
+        return try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val attrs = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+                val listener = AudioManager.OnAudioFocusChangeListener { }
+                val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+                    .setAudioAttributes(attrs)
+                    .setOnAudioFocusChangeListener(listener)
+                    .build()
+                audioFocusListener = listener
+                audioFocusRequest = req
+                am.requestAudioFocus(req) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            } else {
+                @Suppress("DEPRECATION")
+                am.requestAudioFocus(
+                    null,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                ) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun abandonRecordingAudioFocus() {
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val req = audioFocusRequest
+                if (req != null) {
+                    am.abandonAudioFocusRequest(req)
+                }
+                audioFocusRequest = null
+                audioFocusListener = null
+            } else {
+                @Suppress("DEPRECATION")
+                am.abandonAudioFocus(null)
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun stopRecordingInternal(cancel: Boolean) {
+        isRecordingLoop = false
+        isRecordingVoice = false
+
+        val ar = audioRecord
+        audioRecord = null
+        try {
+            ar?.stop()
+        } catch (_: Exception) {
+        }
+        try {
+            ar?.release()
+        } catch (_: Exception) {
+        }
+
+        try {
+            noiseSuppressor?.release()
+        } catch (_: Exception) {
+        }
+        noiseSuppressor = null
+
+        try {
+            echoCanceler?.release()
+        } catch (_: Exception) {
+        }
+        echoCanceler = null
+
+        val t = recordingThread
+        recordingThread = null
+        try {
+            t?.interrupt()
+        } catch (_: Exception) {
+        }
+
+        val f = recordingFile
+        recordingFile = null
+        if (f != null) {
+            if (cancel) {
+                try {
+                    f.delete()
+                } catch (_: Exception) {
+                }
+            } else {
+                // 回填 WAV header（单声道、16k、16bit）。
+                try {
+                    val totalLen = f.length().coerceAtLeast(44L)
+                    val dataLen = (totalLen - 44L).coerceAtLeast(0L)
+                    val byteRate = 16000 * 1 * 16 / 8
+                    RandomAccessFile(f, "rw").use { raf ->
+                        raf.seek(0)
+                        raf.writeBytes("RIFF")
+                        raf.writeInt(Integer.reverseBytes((36L + dataLen).toInt()))
+                        raf.writeBytes("WAVE")
+                        raf.writeBytes("fmt ")
+                        raf.writeInt(Integer.reverseBytes(16))
+                        raf.writeShort(java.lang.Short.reverseBytes(1.toShort()).toInt())
+                        raf.writeShort(java.lang.Short.reverseBytes(1.toShort()).toInt())
+                        raf.writeInt(Integer.reverseBytes(16000))
+                        raf.writeInt(Integer.reverseBytes(byteRate))
+                        raf.writeShort(java.lang.Short.reverseBytes((1 * 16 / 8).toShort()).toInt())
+                        raf.writeShort(java.lang.Short.reverseBytes(16.toShort()).toInt())
+                        raf.writeBytes("data")
+                        raf.writeInt(Integer.reverseBytes(dataLen.toInt()))
+                    }
+                } catch (_: Exception) {
+                }
+            }
+        }
+
+        abandonRecordingAudioFocus()
+    }
 
     private val requestAudioPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
@@ -235,6 +535,8 @@ class ChatActivity : ComponentActivity() {
         try {
             adapter.registerAdapterDataObserver(object : RecyclerView.AdapterDataObserver() {
                 private fun logChange(event: String) {
+                    if (!enableScrollDebug) return
+
                     try {
                         val st = Throwable().stackTrace
                             .drop(1)
@@ -381,9 +683,7 @@ class ChatActivity : ComponentActivity() {
 
         try {
             val history = ChatEventBus.snapshotMessages()
-            for (m in history) {
-                adapter.submitAppend(m)
-            }
+            adapter.submitAppendBatch(history)
             scrollToBottom()
         } catch (_: Exception) {
         }
@@ -445,6 +745,7 @@ class ChatActivity : ComponentActivity() {
                                 return@launch
                             }
                             appendText(MessageRole.USER, text)
+                            flushUiAppendsNow()
                             followBottom = true
                             scrollToBottom()
                             runPythonTask(text)
@@ -498,6 +799,7 @@ class ChatActivity : ComponentActivity() {
                             return@collect
                         }
                         appendText(MessageRole.USER, text)
+                        flushUiAppendsNow()
                         followBottom = true
                         scrollToBottom()
                         runPythonTask(text)
@@ -505,17 +807,30 @@ class ChatActivity : ComponentActivity() {
                     }
 
                     is ChatEventBus.Event.AppendText -> {
-                        appendText(ev.role, ev.text)
+                        if (ev.role == MessageRole.USER) {
+                            try {
+                                lastActionStreamKind = null
+                                lastAiStreamKind = null
+                                pendingAppendText.clear()
+                                pendingAppendScheduled = false
+                                mainHandler.removeCallbacks(flushPendingAppendRunnable)
+                            } catch (_: Exception) {
+                            }
+                        }
+                        appendTextInternal(ev.role, ev.text, syncToEventBusBuffer = false, kind = ev.kind)
+                        if (ev.role == MessageRole.USER) {
+                            flushUiAppendsNow()
+                        }
                     }
 
                     is ChatEventBus.Event.AppendToLastText -> {
                         runOnUiThread {
-                            if (adapter.appendToLastText(ev.role, ev.text)) {
-                                if (!DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST && isRunningTask && followBottom && !userDraggingMessages) {
-                                    rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
-                                }
-                            } else {
-                                appendText(ev.role, ev.text)
+                            val key = StreamAppendKey(ev.role, ev.kind)
+                            val sb = pendingAppendText[key] ?: StringBuilder().also { pendingAppendText[key] = it }
+                            sb.append(ev.text)
+                            if (!pendingAppendScheduled) {
+                                pendingAppendScheduled = true
+                                mainHandler.postDelayed(flushPendingAppendRunnable, 32L)
                             }
                         }
                     }
@@ -527,7 +842,7 @@ class ChatActivity : ComponentActivity() {
                             ""
                         }
                         if (b64.isNotEmpty()) {
-                            appendImage(b64)
+                            appendImageInternal(b64, syncToEventBusBuffer = false)
                         }
                     }
                 }
@@ -636,7 +951,9 @@ class ChatActivity : ComponentActivity() {
                 v.updatePadding(top = bars.top, bottom = maxOf(ime.bottom, bars.bottom))
                 if (insets.isVisible(Type.ime())) {
                     if (followBottom && !userDraggingMessages) {
-                        Log.d(scrollDebugTag, "IME visible -> scrollToBottom at ${SystemClock.uptimeMillis()}")
+                        if (enableScrollDebug) {
+                            Log.d(scrollDebugTag, "IME visible -> scrollToBottom at ${SystemClock.uptimeMillis()}")
+                        }
                         if (!DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST) {
                             scrollToBottom()
                         }
@@ -652,20 +969,21 @@ class ChatActivity : ComponentActivity() {
 
     private fun scrollToBottom() {
         if (DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST) return
-        runOnUiThread {
-            val last = adapter.getItemCountSafe() - 1
-            if (last >= 0) {
-                try {
-                    val st = Throwable().stackTrace
-                        .drop(1)
-                        .take(6)
-                        .joinToString(" | ") { "${it.className.substringAfterLast('.')}#${it.methodName}:${it.lineNumber}" }
-                    Log.d(scrollDebugTag, "scrollToBottom -> scrollToPosition($last) followBottom=$followBottom dragging=$userDraggingMessages t=${SystemClock.uptimeMillis()} stack=$st")
-                } catch (_: Exception) {
-                }
-                rvMessages.post { rvMessages.scrollToPosition(last) }
+
+        val last = adapter.getItemCountSafe() - 1
+        if (last < 0) return
+
+        if (enableScrollDebug) {
+            try {
+                val st = Throwable().stackTrace
+                    .drop(1)
+                    .take(6)
+                    .joinToString(" | ") { "${it.className.substringAfterLast('.')}#${it.methodName}:${it.lineNumber}" }
+                Log.d(scrollDebugTag, "scrollToBottom -> scrollToPosition($last) followBottom=$followBottom dragging=$userDraggingMessages t=${SystemClock.uptimeMillis()} stack=$st")
+            } catch (_: Exception) {
             }
         }
+        rvMessages.post { rvMessages.scrollToPosition(last) }
     }
 
     private fun isNearBottom(): Boolean {
@@ -677,11 +995,15 @@ class ChatActivity : ComponentActivity() {
     }
 
     private fun dumpScrollState(reason: String) {
-        if (DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST) return
+        if (!enableScrollDebug) return
         try {
-            val lm = rvMessages.layoutManager as? LinearLayoutManager
-            val first = lm?.findFirstVisibleItemPosition() ?: -1
-            val last = lm?.findLastVisibleItemPosition() ?: -1
+            val lm = rvMessages.layoutManager as? LinearLayoutManager ?: return
+            val first = try {
+                lm.findFirstVisibleItemPosition()
+            } catch (_: Exception) {
+                -1
+            }
+            val last = lm.findLastVisibleItemPosition()
             val offset = try {
                 rvMessages.computeVerticalScrollOffset()
             } catch (_: Exception) {
@@ -981,6 +1303,7 @@ class ChatActivity : ComponentActivity() {
             inputText.value = ""
             sendEnabled.value = false
             appendText(MessageRole.USER, text)
+            flushUiAppendsNow()
             scrollToBottom()
             runPythonTask(text)
         }
@@ -1048,6 +1371,8 @@ class ChatActivity : ComponentActivity() {
             hideVoiceOverlay()
             return
         }
+
+        requestRecordingAudioFocus()
 
         val dir = File(cacheDir, "voice").apply { mkdirs() }
         val outFile = File(dir, "stt_${System.currentTimeMillis()}.wav")
@@ -1183,8 +1508,19 @@ class ChatActivity : ComponentActivity() {
 
             val trimmed = text.trim()
             val onlyHash = trimmed.isNotEmpty() && trimmed.all { it == '#' }
-            if (trimmed.isEmpty() || onlyHash || trimmed.startsWith("识别失败")) {
-                appendText(MessageRole.ACTION, if (trimmed.isEmpty() || onlyHash) "没听清，请重试" else trimmed)
+            if (trimmed.isEmpty() || onlyHash || trimmed.startsWith("识别失败") || trimmed.startsWith("JWT请求失败")) {
+                val msg = if (trimmed.isEmpty() || onlyHash) {
+                    "没听清，请重试"
+                } else if (trimmed.startsWith("JWT请求失败")) {
+                    if (trimmed.contains("\"code\"\\s*:\\s*\"1301\"".toRegex()) || trimmed.contains("contentFilter", ignoreCase = true)) {
+                        "语音请求失败：内容安全策略拦截，请调整输入后重试"
+                    } else {
+                        "语音请求失败，请稍后重试"
+                    }
+                } else {
+                    trimmed
+                }
+                appendText(MessageRole.ACTION, msg)
                 FloatingStatusService.setIdle(this@ChatActivity, "没听清，请重试")
                 mainHandler.postDelayed({
                     FloatingStatusService.setIdle(this@ChatActivity, "等待指令")
@@ -1192,11 +1528,11 @@ class ChatActivity : ComponentActivity() {
                 hideVoiceOverlay()
                 return@launch
             }
-
             runOnUiThread {
                 hideVoiceOverlay()
                 inputText.value = trimmed
                 appendText(MessageRole.USER, trimmed)
+                flushUiAppendsNow()
                 inputText.value = ""
                 sendEnabled.value = false
                 followBottom = true
@@ -1206,228 +1542,13 @@ class ChatActivity : ComponentActivity() {
         }
     }
 
-    private fun showVoiceOverlayListening() {
-        runOnUiThread {
-            tvVoiceOverlay.text = VoicePromptText.LISTENING
-            voiceOverlay.visibility = View.VISIBLE
-        }
-    }
-
-    private fun showVoiceOverlayRecognizing() {
-        runOnUiThread {
-            tvVoiceOverlay.text = VoicePromptText.RECOGNIZING
-            voiceOverlay.visibility = View.VISIBLE
-        }
-    }
-
-    private fun hideVoiceOverlay() {
-        runOnUiThread {
-            voiceOverlay.visibility = View.GONE
-        }
-    }
-
-    private fun stopRecordingInternal(cancel: Boolean) {
-        isRecordingVoice = false
-
-        isRecordingLoop = false
-
-        try {
-            noiseSuppressor?.release()
-        } catch (_: Exception) {
-        }
-        noiseSuppressor = null
-        try {
-            echoCanceler?.release()
-        } catch (_: Exception) {
-        }
-        echoCanceler = null
-
-        val t = recordingThread
-        recordingThread = null
-        try {
-            t?.join(600)
-        } catch (_: Exception) {
-        }
-
-        val ar = audioRecord
-        audioRecord = null
-        try {
-            ar?.stop()
-        } catch (_: Exception) {
-        }
-        try {
-            ar?.release()
-        } catch (_: Exception) {
-        }
-
-        val file = recordingFile
-        if (!cancel && file != null) {
-            try {
-                finalizeWavFile(file, sampleRate = 16000, channels = 1)
-            } catch (_: Exception) {
-            }
-        }
-
-        if (cancel) {
-            try {
-                file?.delete()
-            } catch (_: Exception) {
-            }
-        }
-
-        recordingFile = null
-    }
-
-    private fun finalizeWavFile(file: File, sampleRate: Int, channels: Int) {
-        // WAV header format: https://ccrma.stanford.edu/courses/422/projects/WaveFormat/
-        RandomAccessFile(file, "rw").use { raf ->
-            val totalDataLen = raf.length() - 44
-            if (totalDataLen < 0) return
-            val byteRate = sampleRate * channels * 16 / 8
-
-            raf.seek(0)
-
-            fun writeString(s: String) {
-                raf.write(s.toByteArray(Charsets.US_ASCII))
-            }
-
-            fun writeIntLE(v: Int) {
-                raf.write(byteArrayOf(
-                    (v and 0xff).toByte(),
-                    ((v shr 8) and 0xff).toByte(),
-                    ((v shr 16) and 0xff).toByte(),
-                    ((v shr 24) and 0xff).toByte(),
-                ))
-            }
-
-            fun writeShortLE(v: Int) {
-                raf.write(byteArrayOf(
-                    (v and 0xff).toByte(),
-                    ((v shr 8) and 0xff).toByte(),
-                ))
-            }
-
-            writeString("RIFF")
-            writeIntLE((36 + totalDataLen).toInt())
-            writeString("WAVE")
-            writeString("fmt ")
-            writeIntLE(16) // PCM
-            writeShortLE(1) // audio format = PCM
-            writeShortLE(channels)
-            writeIntLE(sampleRate)
-            writeIntLE(byteRate)
-            writeShortLE(channels * 16 / 8) // block align
-            writeShortLE(16) // bits per sample
-            writeString("data")
-            writeIntLE(totalDataLen.toInt())
-        }
-    }
-
-    private fun ensureAdbServerAndRefreshStatus() {
+    private fun sendText(text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
         lifecycleScope.launch {
-            updateAdbStatus()
-        }
-    }
-
-    private fun updateFloatingStatusFromAction(kind: String, text: String) {
-        if (!isRunningTask) return
-
-        // 清理之前的“完成后自动隐藏”任务：旧逻辑保留字段但不再用于悬浮条隐藏。
-        pendingAutoHideRunnable?.let { mainHandler.removeCallbacks(it) }
-        pendingAutoHideRunnable = null
-
-        val t = text.trim()
-        if (t.isEmpty()) return
-
-        val display = OverlayStatusTextMapper.map(kind, t)
-        if (!display.isNullOrBlank()) {
-            FloatingStatusService.update(this, display)
-        }
-    }
-
-    private fun updateAdbStatus() {
-        val snapshot = getAdbStatusSnapshot()
-        tvAdbStatus.text = snapshot
-    }
-
-    private fun getAdbStatusSnapshot(): String {
-        val modeText = try {
-            val mode = ConfigManager(this).getAdbConnectMode()
-            if (mode == ConfigManager.ADB_MODE_SHIZUKU) {
-                "模式：Shizuku"
-            } else {
-                "模式：无线调试"
-            }
-        } catch (_: Exception) {
-            "模式：未知"
-        }
-
-        return try {
-            val adbExecPath = computeInternalAdbPath()
-            val r = LocalAdb.runCommand(
-                this,
-                LocalAdb.buildAdbCommand(this, adbExecPath, listOf("devices")),
-                timeoutMs = 8_000L
-            )
-
-            val lines = r.output.lines()
-            val deviceLines = lines
-                .dropWhile { !it.contains("List of devices") }
-                .drop(1)
-                .map { it.trim() }
-                .filter { it.isNotEmpty() }
-
-            val parsed = deviceLines.mapNotNull { line ->
-                val parts = line.split(Regex("\\s+"))
-                if (parts.size < 2) return@mapNotNull null
-                parts[0] to parts[1]
-            }
-
-            val online = parsed.firstOrNull { it.second == "device" }?.first.orEmpty()
-            if (online.isNotEmpty()) {
-                try {
-                    // 自动纠正历史记录：以当前真实 online 端点为准
-                    ConfigManager(this).setLastAdbEndpoint(online)
-                } catch (_: Exception) {
-                }
-                return "$modeText\nADB: 已连接（$online）"
-            }
-
-            val offline = parsed.firstOrNull { it.second == "offline" }?.first.orEmpty()
-            if (offline.isNotEmpty()) {
-                return "$modeText\nADB: 设备离线（$offline）"
-            }
-
-            val last = ConfigManager(this).getLastAdbEndpoint().trim()
-            if (last.isNotEmpty()) {
-                return "$modeText\nADB: 无在线设备（最近记录=$last）"
-            }
-            "$modeText\nADB: 无在线设备"
-        } catch (_: Exception) {
-            // 这里通常意味着 adb server 不可用/未启动，或 adb.bin 启动失败
-            "$modeText\nADB: Server 未启动"
-        }
-    }
-
-    private fun computeInternalAdbPath(): String {
-        val adbPath = File(filesDir, "bin/adb").absolutePath
-        val adbBinPath = File(filesDir, "bin/adb.bin").absolutePath
-        val adbBinFile = File(adbBinPath)
-        return if (adbBinFile.exists() && adbBinFile.length() > 0L) adbBinPath else adbPath
-    }
-
-    private fun appendText(role: MessageRole, text: String) {
-        runOnUiThread {
-            val m = ChatMessage(
-                id = idGen.getAndIncrement(),
-                role = role,
-                type = MessageType.TEXT,
-                text = text,
-            )
-            adapter.submitAppend(m)
-            if (!DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST && isRunningTask && followBottom && !userDraggingMessages) {
-                rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
-            }
+            appendText(MessageRole.USER, trimmed)
+            flushUiAppendsNow()
+            runPythonTask(trimmed)
         }
     }
 
@@ -1477,25 +1598,28 @@ class ChatActivity : ComponentActivity() {
         updateFloatingStatusFromAction(kind, text)
 
         runOnUiThread {
-            // 操作描述（OPERATION）单独成一条消息，不与其他类型合并
-            val shouldMerge = (isRunningTask || mergeStreamAfterStop) && kind == lastActionStreamKind && kind != "OPERATION"
-            if (shouldMerge && adapter.appendToLastText(MessageRole.ACTION, text)) {
-                if (!DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST && isRunningTask && followBottom && !userDraggingMessages) {
-                    rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
-                }
+            // 合并策略：仅同 kind 允许合并；步骤/操作类信息默认不与其他类型合并。
+            val shouldMerge = (isRunningTask || mergeStreamAfterStop) && !kind.startsWith("STEP") && !kind.startsWith("OP_") && kind != "OPERATION"
+            if (shouldMerge && adapter.appendToLastText(MessageRole.ACTION, kind, text)) {
+                ChatEventBus.recordAppendToLastText(MessageRole.ACTION, kind, text)
+                scheduleFlushUiAppends()
+                lastActionStreamKind = classified.nextLastKind
                 return@runOnUiThread
             }
             val m = ChatMessage(
                 id = idGen.getAndIncrement(),
                 role = MessageRole.ACTION,
                 type = MessageType.TEXT,
+                kind = kind,
                 text = text,
             )
-            adapter.submitAppend(m)
-            lastActionStreamKind = classified.nextLastKind
-            if (!DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST && isRunningTask && followBottom && !userDraggingMessages) {
-                rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
+            ChatEventBus.recordText(MessageRole.ACTION, text, kind = kind)
+            enqueueUiAppend(m)
+            // 流式期间新建的气泡需要立即落地，避免下一段 token 继续新建导致刷屏。
+            if (isRunningTask || mergeStreamAfterStop) {
+                flushUiAppendsNow()
             }
+            lastActionStreamKind = classified.nextLastKind
         }
     }
 
@@ -1507,31 +1631,42 @@ class ChatActivity : ComponentActivity() {
         runOnUiThread {
             // 合并策略：当任务执行中，且最后一条是 AI 文本，则把内容拼接到最后一条；
             // 否则创建新气泡。
-            if ((isRunningTask || mergeStreamAfterStop) && kind == lastAiStreamKind && adapter.appendToLastText(MessageRole.AI, text)) {
-                if (!DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST && isRunningTask && followBottom && !userDraggingMessages) {
-                    rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
-                }
+            if ((isRunningTask || mergeStreamAfterStop) && adapter.appendToLastText(MessageRole.AI, kind, text)) {
+                ChatEventBus.recordAppendToLastText(MessageRole.AI, kind, text)
+                scheduleFlushUiAppends()
+                lastAiStreamKind = classified.nextLastKind
                 return@runOnUiThread
             }
             val m = ChatMessage(
                 id = idGen.getAndIncrement(),
                 role = MessageRole.AI,
                 type = MessageType.TEXT,
+                kind = kind,
                 text = text,
             )
-            adapter.submitAppend(m)
-            lastAiStreamKind = classified.nextLastKind
-            if (!DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST && isRunningTask && followBottom && !userDraggingMessages) {
-                rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
+            ChatEventBus.recordText(MessageRole.AI, text, kind = kind)
+            enqueueUiAppend(m)
+            // 流式期间新建的气泡需要立即落地，避免下一段 token 继续新建导致刷屏。
+            if (isRunningTask || mergeStreamAfterStop) {
+                flushUiAppendsNow()
             }
+            lastAiStreamKind = classified.nextLastKind
         }
     }
 
     private fun appendImage(base64: String) {
+        appendImageInternal(base64, syncToEventBusBuffer = true)
+    }
+
+    private fun appendImageInternal(base64: String, syncToEventBusBuffer: Boolean) {
         val bytes = try {
             android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
         } catch (_: Exception) {
             null
+        }
+        if (bytes == null || bytes.isEmpty()) return
+        if (syncToEventBusBuffer) {
+            ChatEventBus.recordImage(bytes)
         }
         runOnUiThread {
             val m = ChatMessage(
@@ -1540,14 +1675,19 @@ class ChatActivity : ComponentActivity() {
                 type = MessageType.IMAGE,
                 imageBytes = bytes,
             )
-            adapter.submitAppend(m)
-            if (!DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST && isRunningTask && followBottom && !userDraggingMessages) {
-                rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
-            }
+            enqueueUiAppend(m)
         }
     }
 
     private fun runPythonTask(task: String) {
+        try {
+            lastActionStreamKind = null
+            lastAiStreamKind = null
+            pendingAppendText.clear()
+            pendingAppendScheduled = false
+            mainHandler.removeCallbacks(flushPendingAppendRunnable)
+        } catch (_: Exception) {
+        }
         sendEnabled.value = false
         updateAdbStatus()
 

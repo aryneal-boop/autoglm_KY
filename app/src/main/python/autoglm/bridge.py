@@ -3,6 +3,7 @@ import time
 import tempfile
 import wave
 import struct
+import json
 
 import jwt
 import requests
@@ -68,6 +69,18 @@ def speech_to_text_zhipu(audio_path: str, api_key: str):
             )
 
         if resp.status_code != 200:
+            try:
+                if resp.status_code == 400:
+                    j = json.loads(resp.text or "")
+                    if isinstance(j, dict):
+                        err = j.get("error")
+                        code = None
+                        if isinstance(err, dict):
+                            code = str(err.get("code") or "").strip()
+                        if code == "1301" or j.get("contentFilter"):
+                            return "识别失败: 内容安全策略拦截，请调整输入后重试"
+            except Exception:
+                pass
             return f"JWT请求失败: {resp.status_code} - {resp.text}"
 
         try:

@@ -104,8 +104,14 @@ class ChatAdapter(
     }
 
     fun submitAppend(message: ChatMessage) {
-        items.add(message)
-        notifyItemInserted(items.size - 1)
+        submitAppendBatch(listOf(message))
+    }
+
+    fun submitAppendBatch(messages: List<ChatMessage>) {
+        if (messages.isEmpty()) return
+        val start = items.size
+        items.addAll(messages)
+        notifyItemRangeInserted(start, messages.size)
     }
 
     fun updateLastText(role: MessageRole, newText: String): Boolean {
@@ -128,17 +134,33 @@ class ChatAdapter(
         return last.text
     }
 
-    fun appendToLastText(role: MessageRole, delta: String): Boolean {
+    fun appendToLastText(role: MessageRole, kind: String?, delta: String): Boolean {
         if (delta.isEmpty()) return false
         if (items.isEmpty()) return false
-        val lastIndex = items.size - 1
-        val last = items[lastIndex]
-        if (last.type != MessageType.TEXT) return false
-        if (last.role != role) return false
-        val next = (last.text.orEmpty() + delta)
-        items[lastIndex] = last.copy(text = next)
-        notifyItemChanged(lastIndex)
-        return true
+        var i = items.size - 1
+        while (i >= 0) {
+            val m = items[i]
+            if (m.role == MessageRole.USER) {
+                // 以用户消息作为“任务边界”：新任务的 AI/ACTION 不允许合并到上一轮的旧气泡。
+                return false
+            }
+            if (role == MessageRole.AI && m.role == MessageRole.ACTION && m.kind == "STEP") {
+                // 以步骤消息作为“阶段边界”：新步骤的 AI/THINK 不允许合并到上一步的 AI 气泡。
+                return false
+            }
+            if (m.type == MessageType.TEXT && m.role == role) {
+                // 同 role 但不同 kind，说明已进入新的阶段/步骤，不允许回溯合并到更早的旧气泡。
+                if (m.kind != kind) {
+                    return false
+                }
+                val next = (m.text.orEmpty() + delta)
+                items[i] = m.copy(text = next)
+                notifyItemChanged(i)
+                return true
+            }
+            i--
+        }
+        return false
     }
 
     fun getItemCountSafe(): Int = items.size

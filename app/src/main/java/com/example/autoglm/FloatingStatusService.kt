@@ -25,22 +25,28 @@ import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.graphics.Shader
 import android.graphics.drawable.GradientDrawable
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
-import android.os.Handler
 import android.os.Build
+import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
-import android.os.HandlerThread
+import android.os.Handler
 import android.provider.Settings
 import android.util.Base64
 import android.util.Log
 import android.util.TypedValue
+import android.view.GestureDetector
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.InputDevice
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.TextureView
@@ -48,9 +54,9 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.view.animation.LinearInterpolator
+import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
-import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.animation.ValueAnimator
@@ -61,10 +67,16 @@ import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import com.example.autoglm.chat.ChatEventBus
 import com.example.autoglm.chat.MessageRole
+import com.example.autoglm.input.VirtualAsyncInputInjector
+import com.example.autoglm.input.InputHelper
+import com.example.autoglm.ui.GlowButton
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -80,6 +92,31 @@ class FloatingStatusService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val workerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    private val configManager by lazy { ConfigManager(applicationContext) }
+
+    private var toolboxModeSuffix: String = ""
+    private var touchLayerPerfLastLogMs: Long = 0L
+    private var touchLayerLastCostMs: Long = 0L
+    private var touchLayerMaxCostMs: Long = 0L
+    private var touchLayerLagCount: Long = 0L
+    private var touchLayerEventCount: Long = 0L
+    private var touchLayerLastAction: Int = -1
+    private var touchLayerLastSeq: Long = -1L
+
+    private var touchLayerThread: HandlerThread? = null
+    private var touchLayerHandler: Handler? = null
+    private var touchLayerLastMovePostMs: Long = 0L
+    private var touchLayerLastIndicatorUiMs: Long = 0L
+    private var touchLayerGestureDownTime: Long = 0L
+
+    private var touchLayerShellDownViewX: Float = 0f
+    private var touchLayerShellDownViewY: Float = 0f
+    private var touchLayerShellDownTx: Int = 0
+    private var touchLayerShellDownTy: Int = 0
+    private var touchLayerShellLastTx: Int = 0
+    private var touchLayerShellLastTy: Int = 0
+    private var touchLayerShellMoved: Boolean = false
 
     private var windowManager: WindowManager? = null
     private var barView: View? = null
@@ -136,6 +173,9 @@ class FloatingStatusService : Service() {
     @Volatile
     private var recordingLoop: Boolean = false
     private var recordingFile: File? = null
+
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private var audioFocusListener: AudioManager.OnAudioFocusChangeListener? = null
 
     private val isRecognizing = AtomicBoolean(false)
 
@@ -224,12 +264,50 @@ class FloatingStatusService : Service() {
 
     private fun toolboxWidthPx(): Int = dp(260)
 
+    private fun virtualPreviewContentSizeFixed(): Pair<Int, Int> {
+        val latest = runCatching { com.example.autoglm.vdiso.ShizukuVirtualDisplayEngine.getLatestContentSize() }.getOrNull()
+        val lw = latest?.first?.takeIf { it > 0 }
+        val lh = latest?.second?.takeIf { it > 0 }
+        if (lw != null && lh != null) return lw to lh
+
+        return runCatching {
+            ConfigManager(this).getVirtualDisplaySize(isLandscape = false)
+        }.getOrElse {
+            480 to 848
+        }
+    }
+
+    private fun toolboxVirtualPreviewHeightPxFixed(): Int {
+        val (cw, ch) = virtualPreviewContentSizeFixed()
+        val w = (toolboxPreviewWrapView?.width ?: 0).takeIf { it > 0 }
+            ?: toolboxWidthPx().coerceAtLeast(1)
+        // Keep a reasonable minimum so the preview is usable and buttons won't be squeezed.
+        return ((w.toFloat() * ch.toFloat() / cw.toFloat()).toInt()).coerceAtLeast(dp(180))
+    }
+
     private fun toolboxWindowHeightPx(): Int {
         val maxH = (screenHeightPx() - dp(80)).coerceAtLeast(dp(240))
-        val previewH = (toolboxPreviewWrapView?.layoutParams?.height ?: 0).takeIf { it > 0 } ?: dp(260)
-        // panel padding: top+bottom(10+10) + row topMargin(10) + safe row height
-        val desired = previewH + dp(10) + dp(10) + dp(10) + dp(72)
+        val previewH = if (isVirtualIsolatedMode()) {
+            toolboxVirtualPreviewHeightPxFixed()
+        } else {
+            toolboxVirtualPreviewHeightPxFixed()
+        }
+        // Fixed reserved area for buttons so they won't be squeezed by preview height.
+        val desired = previewH + dp(10) + dp(10) + dp(10) + dp(88)
         return desired.coerceIn(dp(240), maxH)
+    }
+
+    private fun updateMainPreviewAspectRatioBestEffort() {
+        if (isVirtualIsolatedMode()) return
+        val wrap = toolboxPreviewWrapView ?: return
+        mainHandler.post {
+            val targetH = toolboxVirtualPreviewHeightPxFixed()
+            val lp = (wrap.layoutParams as? LinearLayout.LayoutParams) ?: return@post
+            if (lp.height != targetH) {
+                lp.height = targetH
+                wrap.layoutParams = lp
+            }
+        }
     }
 
     private fun snapToolboxToEdge(lp: WindowManager.LayoutParams) {
@@ -276,8 +354,8 @@ class FloatingStatusService : Service() {
         }
 
         if (panel is LinearLayout) {
-            val base = dp(10)
-            val reserve = handleW + dp(8)
+            val base = dp(0)
+            val reserve = dp(0)
             panel.setPadding(
                 if (dockRight) base else reserve,
                 base,
@@ -290,77 +368,185 @@ class FloatingStatusService : Service() {
         }
     }
 
-    private data class VirtualTouchCmd(
-        val displayId: Int,
-        val downTime: Long,
-        val eventTime: Long,
-        val action: Int,
-        val x: Int,
-        val y: Int,
-        val ensureFocus: Boolean,
-    )
+    private fun enqueueVirtualTouchCmd(
+        displayId: Int,
+        downTime: Long,
+        action: Int,
+        x: Int,
+        y: Int,
+        ensureFocus: Boolean,
+    ) {
+        if (!isVirtualIsolatedMode()) return
+        if (displayId <= 0) return
+        if (!ShizukuBridge.pingBinder() || !ShizukuBridge.hasPermission()) return
 
-    @Volatile
-    private var inputInjectionThread: HandlerThread? = null
+        InputHelper.enqueueTouch(
+            displayId = displayId,
+            downTime = downTime,
+            action = action,
+            x = x,
+            y = y,
+            ensureFocus = ensureFocus,
+        )
+    }
 
-    @Volatile
-    private var inputInjectionHandler: Handler? = null
-
-    @Volatile
-    private var inputInjectLastLogMs: Long = 0L
-
-    private fun ensureInputInjectionThreadStarted() {
-        if (inputInjectionHandler != null) return
-        val t = HandlerThread("InputInjectionThread")
-        t.start()
-        inputInjectionThread = t
-        inputInjectionHandler = Handler(t.looper) { msg ->
-            val cmd = msg.obj as? VirtualTouchCmd
-            if (cmd != null) {
-                runCatching { handleVirtualTouchCmd(cmd) }
+    private fun ensureTouchLayerThreadStarted() {
+        if (touchLayerThread != null && touchLayerHandler != null) return
+        val t = HandlerThread("TouchLayerThread").also { it.start() }
+        touchLayerThread = t
+        touchLayerHandler = Handler(t.looper) { msg ->
+            val obj = msg.obj
+            val sample = obj as? TouchLayerSample
+            if (sample != null) {
+                runCatching { handleTouchLayerSample(sample) }
             }
             true
         }
     }
 
-    private fun enqueueVirtualTouchCmd(cmd: VirtualTouchCmd) {
-        ensureInputInjectionThreadStarted()
-        val h = inputInjectionHandler ?: return
+    private data class TouchLayerSample(
+        val action: Int,
+        val viewX: Float,
+        val viewY: Float,
+        val viewW: Int,
+        val viewH: Int,
+        val eventTime: Long,
+    )
 
-        val MSG_MOVE = 2
-        val MSG_OTHER = 1
+    private fun handleTouchLayerSample(sample: TouchLayerSample) {
+        if (!isVirtualIsolatedMode()) return
 
-        val what = if (cmd.action == MotionEvent.ACTION_MOVE) MSG_MOVE else MSG_OTHER
-        val msg = h.obtainMessage(what, cmd)
+        val did = VirtualDisplayController.getDisplayId() ?: 0
+        if (did <= 0) return
 
-        // Conflate MOVE: keep only the latest MOVE.
-        if (what == MSG_MOVE) {
-            h.removeMessages(MSG_MOVE)
-            h.sendMessage(msg)
-        } else {
-            // DOWN/UP/CANCEL should be delivered ASAP.
-            h.sendMessageAtFrontOfQueue(msg)
+        val cwCh = runCatching { com.example.autoglm.vdiso.ShizukuVirtualDisplayEngine.getLatestContentSize() }.getOrNull()
+        val cw = cwCh?.first?.takeIf { it > 0 } ?: 720
+        val ch = cwCh?.second?.takeIf { it > 0 } ?: 1280
+
+        val vw = sample.viewW
+        val vh = sample.viewH
+        if (vw <= 0 || vh <= 0) return
+
+        val (tx, ty) = mapViewPointToContentLinear(
+            viewX = sample.viewX,
+            viewY = sample.viewY,
+            vw = vw,
+            vh = vh,
+            cw = cw,
+            ch = ch,
+        )
+
+        val nowMs = android.os.SystemClock.uptimeMillis()
+        val longPressThresholdMs = 450L
+        val moveThresholdViewPx = dp(8).toFloat()
+
+        when (sample.action) {
+            MotionEvent.ACTION_DOWN -> {
+                touchLayerGestureDownTime = android.os.SystemClock.uptimeMillis()
+                touchLayerShellDownViewX = sample.viewX
+                touchLayerShellDownViewY = sample.viewY
+                touchLayerShellDownTx = tx
+                touchLayerShellDownTy = ty
+                touchLayerShellLastTx = tx
+                touchLayerShellLastTy = ty
+                touchLayerShellMoved = false
+                mainHandler.post {
+                    showLocalPreviewIndicatorAt(sample.viewX, sample.viewY)
+                }
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                val dx = kotlin.math.abs(sample.viewX - touchLayerShellDownViewX)
+                val dy = kotlin.math.abs(sample.viewY - touchLayerShellDownViewY)
+                if (!touchLayerShellMoved && (dx >= moveThresholdViewPx || dy >= moveThresholdViewPx)) {
+                    touchLayerShellMoved = true
+                }
+                touchLayerShellLastTx = tx
+                touchLayerShellLastTy = ty
+            }
+
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                val dur = (nowMs - touchLayerGestureDownTime).coerceAtLeast(0L)
+                val x0 = touchLayerShellDownTx
+                val y0 = touchLayerShellDownTy
+                val x1 = touchLayerShellLastTx
+                val y1 = touchLayerShellLastTy
+
+                if (sample.action == MotionEvent.ACTION_CANCEL) {
+                    // no-op
+                } else if (touchLayerShellMoved) {
+                    execShellSwipeBestEffort(did, x0, y0, x1, y1, dur)
+                } else if (dur >= longPressThresholdMs) {
+                    execShellLongPressBestEffort(did, x0, y0, dur)
+                } else {
+                    execShellTapBestEffort(did, x0, y0)
+                }
+
+                mainHandler.post {
+                    hideLocalPreviewIndicator()
+                }
+
+                touchLayerShellMoved = false
+            }
         }
     }
 
-    private fun handleVirtualTouchCmd(cmd: VirtualTouchCmd) {
-        val startNs = System.nanoTime()
-        injectVirtualSingleTouchBestEffort(
-            displayId = cmd.displayId,
-            downTime = cmd.downTime,
-            eventTime = cmd.eventTime,
-            action = cmd.action,
-            x = cmd.x,
-            y = cmd.y,
-            ensureFocus = cmd.ensureFocus,
-        )
-        val endNs = System.nanoTime()
+    private fun execInputCommandBestEffort(displayId: Int, cmdWithoutDisplay: String, cmdWithDisplay: String) {
+        if (!ShizukuBridge.pingBinder() || !ShizukuBridge.hasPermission()) return
+        if (displayId <= 0) {
+            runCatching { ShizukuBridge.execResult(cmdWithoutDisplay) }
+            return
+        }
 
-        val nowMs = android.os.SystemClock.uptimeMillis()
-        if (nowMs - inputInjectLastLogMs >= 1000L) {
-            inputInjectLastLogMs = nowMs
-            val injectMs = (endNs - startNs) / 1_000_000.0
-            Log.i("InputInject", "inject: action=${cmd.action} ms=$injectMs display=${cmd.displayId} xy=${cmd.x},${cmd.y}")
+        val r = runCatching { ShizukuBridge.execResult(cmdWithDisplay) }.getOrNull()
+        if (r != null && r.exitCode == 0) return
+        runCatching { ShizukuBridge.execResult(cmdWithoutDisplay) }
+    }
+
+    private fun execShellTapBestEffort(displayId: Int, x: Int, y: Int) {
+        execInputCommandBestEffort(
+            displayId = displayId,
+            cmdWithoutDisplay = "input tap $x $y",
+            cmdWithDisplay = "input -d $displayId tap $x $y",
+        )
+    }
+
+    private fun execShellSwipeBestEffort(displayId: Int, x0: Int, y0: Int, x1: Int, y1: Int, durationMs: Long) {
+        val d = durationMs.coerceIn(60L, 1200L)
+        execInputCommandBestEffort(
+            displayId = displayId,
+            cmdWithoutDisplay = "input swipe $x0 $y0 $x1 $y1 $d",
+            cmdWithDisplay = "input -d $displayId swipe $x0 $y0 $x1 $y1 $d",
+        )
+    }
+
+    private fun execShellLongPressBestEffort(displayId: Int, x: Int, y: Int, durationMs: Long) {
+        val d = durationMs.coerceIn(450L, 1500L)
+        execInputCommandBestEffort(
+            displayId = displayId,
+            cmdWithoutDisplay = "input swipe $x $y $x $y $d",
+            cmdWithDisplay = "input -d $displayId swipe $x $y $x $y $d",
+        )
+    }
+
+    private fun logTouchLayerOnce(msg: String, force: Boolean = false) {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (!force && now - touchLayerPerfLastLogMs < 350L) return
+        touchLayerPerfLastLogMs = now
+        Log.w("TouchLayer", msg)
+    }
+
+    private fun updateTouchLayerPerfSuffix(action: Int, seq: Long, costMs: Long, lagged: Boolean) {
+        touchLayerLastCostMs = costMs
+        touchLayerMaxCostMs = maxOf(touchLayerMaxCostMs, costMs)
+        touchLayerEventCount++
+        if (lagged) touchLayerLagCount++
+        touchLayerLastAction = action
+        touchLayerLastSeq = seq
+
+        toolboxModeSuffix = "touch=${touchLayerLastCostMs}ms max=${touchLayerMaxCostMs}ms lag=${touchLayerLagCount}/${touchLayerEventCount} a=$action"
+        mainHandler.post {
+            updateToolboxModeLabel()
         }
     }
 
@@ -376,21 +562,23 @@ class FloatingStatusService : Service() {
         if (vw <= 0 || vh <= 0) return
 
         val size = runCatching { com.example.autoglm.vdiso.ShizukuVirtualDisplayEngine.getLatestContentSize() }.getOrNull()
-        val cw = size?.first?.takeIf { it > 0 } ?: 848
-        val ch = size?.second?.takeIf { it > 0 } ?: 480
+        val cw = size?.first?.takeIf { it > 0 } ?: 720
+        val ch = size?.second?.takeIf { it > 0 } ?: 1280
 
-        val nx = (viewX / vw.toFloat()).coerceIn(0f, 1f)
-        val ny = (viewY / vh.toFloat()).coerceIn(0f, 1f)
-        val tx = (nx * cw.toFloat()).toInt().coerceIn(0, cw - 1)
-        val ty = (ny * ch.toFloat()).toInt().coerceIn(0, ch - 1)
+        val (tx, ty) = mapViewPointToContentLinear(
+            viewX = viewX,
+            viewY = viewY,
+            vw = vw,
+            vh = vh,
+            cw = cw,
+            ch = ch,
+        )
 
         runCatching { TapIndicatorService.showAtOnDisplay(this, tx.toFloat(), ty.toFloat(), did) }
 
-        workerScope.launch {
-            runCatching {
-                ShizukuBridge.execResult("input -d $did tap $tx $ty")
-            }
-        }
+        val downTime = android.os.SystemClock.uptimeMillis()
+        enqueueVirtualTouchCmd(did, downTime, MotionEvent.ACTION_DOWN, tx, ty, true)
+        enqueueVirtualTouchCmd(did, downTime, MotionEvent.ACTION_UP, tx, ty, false)
     }
 
     private data class VirtualMappedPoint(
@@ -412,13 +600,17 @@ class FloatingStatusService : Service() {
         if (vw <= 0 || vh <= 0) return null
 
         val size = runCatching { com.example.autoglm.vdiso.ShizukuVirtualDisplayEngine.getLatestContentSize() }.getOrNull()
-        val cw = size?.first?.takeIf { it > 0 } ?: 848
-        val ch = size?.second?.takeIf { it > 0 } ?: 480
+        val cw = size?.first?.takeIf { it > 0 } ?: 720
+        val ch = size?.second?.takeIf { it > 0 } ?: 1280
 
-        val nx = (viewX / vw.toFloat()).coerceIn(0f, 1f)
-        val ny = (viewY / vh.toFloat()).coerceIn(0f, 1f)
-        val tx = (nx * cw.toFloat()).toInt().coerceIn(0, cw - 1)
-        val ty = (ny * ch.toFloat()).toInt().coerceIn(0, ch - 1)
+        val (tx, ty) = mapViewPointToContentCenterCrop(
+            viewX = viewX,
+            viewY = viewY,
+            vw = vw,
+            vh = vh,
+            cw = cw,
+            ch = ch,
+        )
 
         return VirtualMappedPoint(displayId = did, x = tx, y = ty, w = cw, h = ch)
     }
@@ -440,90 +632,11 @@ class FloatingStatusService : Service() {
         toolboxPreviewLocalIndicatorView?.visibility = View.GONE
     }
 
-    private class VirtualSingleTouchInjector {
-        @Volatile
-        private var inputManager: Any? = null
-
-        private var injectMethod: java.lang.reflect.Method? = null
-        private var setDisplayIdMethod: java.lang.reflect.Method? = null
-
-        private fun getInputManagerCached(): Any {
-            val existing = inputManager
-            if (existing != null) return existing
-            return com.example.autoglm.vdiso.ShizukuServiceHub.getInputManager().also { inputManager = it }
-        }
-
-        private fun ensureMethods(inputManager: Any) {
-            if (injectMethod == null) {
-                injectMethod = inputManager.javaClass.methods.firstOrNull { m ->
-                    m.name == "injectInputEvent" && m.parameterTypes.size == 2
-                }
-            }
-            if (setDisplayIdMethod == null) {
-                setDisplayIdMethod = MotionEvent::class.java.methods.firstOrNull { m ->
-                    m.name == "setDisplayId" && m.parameterTypes.size == 1 && m.parameterTypes[0] == Int::class.javaPrimitiveType
-                }
-            }
-        }
-
-        private fun MotionEvent.applyDisplayId(displayId: Int): MotionEvent {
-            val m = setDisplayIdMethod
-            if (m != null) {
-                runCatching { m.invoke(this, displayId) }
-            }
-            return this
-        }
-
-        fun inject(displayId: Int, downTime: Long, eventTime: Long, action: Int, x: Float, y: Float) {
-            val inputManager = getInputManagerCached()
-            ensureMethods(inputManager)
-            val inject = injectMethod ?: throw NoSuchMethodException("injectInputEvent not found")
-
-            val props = arrayOf(
-                MotionEvent.PointerProperties().apply {
-                    id = 0
-                    toolType = MotionEvent.TOOL_TYPE_FINGER
-                }
-            )
-            val coords = arrayOf(
-                MotionEvent.PointerCoords().apply {
-                    this.x = x
-                    this.y = y
-                    pressure = 1f
-                    size = 1f
-                }
-            )
-
-            val ev = MotionEvent.obtain(
-                downTime,
-                eventTime,
-                action,
-                1,
-                props,
-                coords,
-                0,
-                0,
-                1f,
-                1f,
-                0,
-                0,
-                0,
-                0,
-            ).applyDisplayId(displayId)
-            ev.source = InputDevice.SOURCE_TOUCHSCREEN
-
-            val ok = inject.invoke(inputManager, ev, 0) as? Boolean ?: false
-            ev.recycle()
-            if (!ok) throw IllegalStateException("injectInputEvent returned false")
-        }
-    }
-
-    private val virtualSingleTouchInjector by lazy { VirtualSingleTouchInjector() }
+    private val virtualAsyncInputInjector by lazy { VirtualAsyncInputInjector() }
 
     private fun injectVirtualSingleTouchBestEffort(
         displayId: Int,
         downTime: Long,
-        eventTime: Long,
         action: Int,
         x: Int,
         y: Int,
@@ -534,23 +647,31 @@ class FloatingStatusService : Service() {
         if (!ShizukuBridge.pingBinder() || !ShizukuBridge.hasPermission()) return
 
         if (ensureFocus) {
-            runCatching { com.example.autoglm.vdiso.ShizukuVirtualDisplayEngine.ensureFocusedDisplay(displayId) }
+            val now = android.os.SystemClock.uptimeMillis()
+            val last = lastEnsureVirtualFocusAtMs
+            if (last <= 0L || now - last >= 400L) {
+                lastEnsureVirtualFocusAtMs = now
+                runCatching { com.example.autoglm.vdiso.ShizukuVirtualDisplayEngine.ensureFocusedDisplay(displayId) }
+            }
         }
 
         runCatching {
-            virtualSingleTouchInjector.inject(
+            virtualAsyncInputInjector.injectSingleTouchAsync(
                 displayId = displayId,
                 downTime = downTime,
-                eventTime = eventTime,
-                action = action,
                 x = x.toFloat(),
                 y = y.toFloat(),
+                action = action,
             )
         }
     }
 
     private fun setToolboxExpanded(expanded: Boolean, animate: Boolean) {
         diag("setToolboxExpanded:$expanded:enter")
+        if (expanded && !isVirtualIsolatedMode()) {
+            openChatActivityBestEffort()
+            return
+        }
         toolboxExpanded = expanded
         val panel = toolboxPanelView ?: return
         val w = toolboxWidthPx().toFloat()
@@ -638,8 +759,8 @@ class FloatingStatusService : Service() {
                         }
                     }
                 } else {
-                    // 主屏幕控制模式：走 screencap 截图 -> ImageView 的低频预览刷新。
-                    startToolboxPreviewTicker()
+                    // 主屏幕控制模式：不展开工具箱（点击竖条跳转聊天界面）。
+                    stopToolboxPreviewTicker()
                 }
             } else {
                 // 收起工具箱：停止所有预览刷新。
@@ -730,7 +851,8 @@ class FloatingStatusService : Service() {
     private fun updateToolboxModeLabel() {
         val tv = toolboxModeTextView ?: return
         val isVirtual = isVirtualIsolatedMode()
-        tv.text = if (isVirtual) "虚拟隔离模式" else "主屏幕模式"
+        val base = if (isVirtual) "虚拟隔离模式" else "主屏幕模式"
+        tv.text = if (toolboxModeSuffix.isNotEmpty()) "$base | $toolboxModeSuffix" else base
 
         val sv = toolboxPreviewTextureView
         val iv = toolboxPreviewView
@@ -780,31 +902,36 @@ class FloatingStatusService : Service() {
             } else {
                 // 切到主屏控制：
                 // 1) 恢复 VirtualDisplay 输出到 ImageReader
-                // 2) 启动主屏截图 ticker（低频）
+                // 2) 若工具箱已展开，立即收起（主屏模式不允许展开）
                 virtualScreenPreviewInFlight.set(false)
                 if (toolboxExpanded) {
-                    startToolboxPreviewTicker()
+                    stopToolboxPreviewTicker()
+                    setToolboxExpanded(false, animate = false)
                 }
             }
         }
     }
 
+    private fun openChatActivityBestEffort() {
+        try {
+            val i = Intent().apply {
+                component = ComponentName(this@FloatingStatusService, ChatActivity::class.java)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+            startActivity(i)
+        } catch (_: Exception) {
+        }
+    }
+
     private fun updateVirtualPreviewAspectRatioBestEffort() {
-        // 根据虚拟屏内容分辨率动态调整预览容器高度，保持比例，避免拉伸。
+        // 虚拟隔离模式：预览容器高度固定为“创建虚拟屏分辨率”的比例，不再动态调整。
         if (!isVirtualIsolatedMode()) return
         val wrap = toolboxPreviewWrapView ?: return
-        val size = runCatching { com.example.autoglm.vdiso.ShizukuVirtualDisplayEngine.getLatestContentSize() }.getOrNull()
-        val cw = size?.first?.takeIf { it > 0 } ?: 848
-        val ch = size?.second?.takeIf { it > 0 } ?: 480
-
         mainHandler.post {
-            val w = wrap.width
-            if (w <= 0) {
-                wrap.post { updateVirtualPreviewAspectRatioBestEffort() }
-                return@post
-            }
+            val targetH = toolboxVirtualPreviewHeightPxFixed()
             val lp = (wrap.layoutParams as? LinearLayout.LayoutParams) ?: return@post
-            val targetH = ((w.toFloat() * ch.toFloat() / cw.toFloat()).toInt()).coerceAtLeast(dp(120))
             if (lp.height != targetH) {
                 lp.height = targetH
                 wrap.layoutParams = lp
@@ -814,8 +941,7 @@ class FloatingStatusService : Service() {
 
     private fun applyVirtualPreviewTransformBestEffort() {
         // TextureView 默认会把 Surface 内容按 View 尺寸拉伸。
-        // 虚拟隔离模式下，我们要求外层容器严格按 848x480（或引擎上报尺寸）等比布局，
-        // 因此这里不再做 center-crop 裁切，避免引入额外缩放/裁剪链路。
+        // 预览容器会按虚拟屏内容比例布局，因此这里保持 identity，避免裁切/拉伸。
         if (!isVirtualIsolatedMode()) return
         val tv = toolboxPreviewTextureView ?: return
         val vw = tv.width
@@ -825,8 +951,71 @@ class FloatingStatusService : Service() {
             return
         }
 
-        // Identity transform: let GL render fill the surface; keep aspect ratio via wrap layout.
         tv.setTransform(Matrix())
+    }
+
+    private fun updateVirtualPreviewBufferSizeBestEffort() {
+        if (!isVirtualIsolatedMode()) return
+        val tv = toolboxPreviewTextureView ?: return
+        if (!tv.isAvailable) return
+        val st = tv.surfaceTexture ?: return
+
+        val (cw, ch) = virtualPreviewContentSizeFixed()
+        if (cw <= 0 || ch <= 0) return
+        runCatching { st.setDefaultBufferSize(cw, ch) }
+    }
+
+    private data class CropMapping(
+        val scale: Float,
+        val offsetX: Float,
+        val offsetY: Float,
+    )
+
+    private fun computeCenterCropMapping(vw: Int, vh: Int, cw: Int, ch: Int): CropMapping {
+        val vwf = vw.coerceAtLeast(1).toFloat()
+        val vhf = vh.coerceAtLeast(1).toFloat()
+        val cwf = cw.coerceAtLeast(1).toFloat()
+        val chf = ch.coerceAtLeast(1).toFloat()
+
+        val sx = vwf / cwf
+        val sy = vhf / chf
+        val scale = maxOf(sx, sy)
+        val scaledW = cwf * scale
+        val scaledH = chf * scale
+        val dx = (vwf - scaledW) / 2f
+        val dy = (vhf - scaledH) / 2f
+        return CropMapping(scale = scale, offsetX = dx, offsetY = dy)
+    }
+
+    private fun mapViewPointToContentCenterCrop(
+        viewX: Float,
+        viewY: Float,
+        vw: Int,
+        vh: Int,
+        cw: Int,
+        ch: Int,
+    ): Pair<Int, Int> {
+        val m = computeCenterCropMapping(vw, vh, cw, ch)
+        val x = ((viewX - m.offsetX) / m.scale)
+        val y = ((viewY - m.offsetY) / m.scale)
+        val tx = x.toInt().coerceIn(0, cw - 1)
+        val ty = y.toInt().coerceIn(0, ch - 1)
+        return tx to ty
+    }
+
+    private fun mapViewPointToContentLinear(
+        viewX: Float,
+        viewY: Float,
+        vw: Int,
+        vh: Int,
+        cw: Int,
+        ch: Int,
+    ): Pair<Int, Int> {
+        val nx = (viewX / vw.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
+        val ny = (viewY / vh.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
+        val tx = (nx * cw.toFloat()).toInt().coerceIn(0, cw - 1)
+        val ty = (ny * ch.toFloat()).toInt().coerceIn(0, ch - 1)
+        return tx to ty
     }
 
     private fun startToolboxPreviewTicker() {
@@ -890,17 +1079,19 @@ class FloatingStatusService : Service() {
         if (!mainScreenPreviewInFlight.compareAndSet(false, true)) return
         workerScope.launch {
             try {
-                val bytes = if (getCurrentConnectMode() == ConfigManager.ADB_MODE_SHIZUKU) {
-                    val b = runCatching { ShizukuBridge.execBytes("screencap -p") }.getOrNull() ?: ByteArray(0)
-                    if (b.size >= 8) b else ByteArray(0)
-                } else {
-                    val b64 = AdbBridge.screencapPngBase64AllowBlack(displayId = 0)
-                    if (b64.isBlank()) return@launch
-                    try {
-                        Base64.decode(b64, Base64.DEFAULT)
-                    } catch (_: Exception) {
-                        null
-                    } ?: return@launch
+                val bytes = withContext(Dispatchers.IO) {
+                    if (getCurrentConnectMode() == ConfigManager.ADB_MODE_SHIZUKU) {
+                        val b = runCatching { ShizukuBridge.execBytes("screencap -p") }.getOrNull() ?: ByteArray(0)
+                        if (b.size >= 8) b else ByteArray(0)
+                    } else {
+                        val b64 = AdbBridge.screencapPngBase64AllowBlack(displayId = 0)
+                        if (b64.isBlank()) return@withContext ByteArray(0)
+                        try {
+                            Base64.decode(b64, Base64.DEFAULT)
+                        } catch (_: Exception) {
+                            ByteArray(0)
+                        }
+                    }
                 }
 
                 if (bytes.isEmpty()) return@launch
@@ -1349,9 +1540,21 @@ class FloatingStatusService : Service() {
             null
         }
 
-        try {
+        runCatching {
             startForegroundInternal(contentText = "语音助手运行中")
-        } catch (_: Exception) {
+        }.onFailure {
+            runCatching {
+                val notification = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_mic)
+                    .setContentTitle("AutoGLM")
+                    .setContentText("语音助手运行中")
+                    .setOngoing(true)
+                    .setOnlyAlertOnce(true)
+                    .setPriority(NotificationCompat.PRIORITY_LOW)
+                    .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                    .build()
+                startForeground(NOTIFICATION_ID, notification)
+            }
         }
     }
 
@@ -1490,12 +1693,18 @@ class FloatingStatusService : Service() {
             windowManager = null
         }
 
-        runCatching {
-            inputInjectionHandler?.removeCallbacksAndMessages(null)
-            inputInjectionHandler = null
-            inputInjectionThread?.quitSafely()
-            inputInjectionThread = null
+        stopRecordingInternal(cancel = true)
+
+        try {
+            touchLayerHandler?.removeCallbacksAndMessages(null)
+        } catch (_: Exception) {
         }
+        touchLayerHandler = null
+        try {
+            touchLayerThread?.quitSafely()
+        } catch (_: Exception) {
+        }
+        touchLayerThread = null
 
         try {
             workerScope.cancel()
@@ -1562,14 +1771,25 @@ class FloatingStatusService : Service() {
 
         val btn = ImageButton(context).apply {
             setImageResource(R.drawable.ic_mic)
-            scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
+            scaleType = android.widget.ImageView.ScaleType.MATRIX
             micFlowDrawable = FlowBorderDrawable(
                 fillColor = Color.parseColor("#D32F2F"),
-                strokeWidthPx = dp(3).toFloat(),
-                cornerRadiusPx = dp(10).toFloat()
+                strokeWidthPx = dp(2).toFloat(),
+                cornerRadiusPx = dp(12).toFloat(),
             )
             background = micFlowDrawable
-            setPadding(dp(4), dp(4), dp(4), dp(4))
+            setPadding(0, 0, 0, 0)
+            post {
+                try {
+                    val scale = 0.945f
+                    val cx = width / 2f
+                    val cy = height / 2f
+                    imageMatrix = android.graphics.Matrix().apply {
+                        setScale(scale, scale, cx, cy)
+                    }
+                } catch (_: Exception) {
+                }
+            }
             setOnTouchListener { v, ev ->
                 when (ev.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
@@ -1657,8 +1877,9 @@ class FloatingStatusService : Service() {
                         stopMicFlowEffect()
                         return@setOnTouchListener true
                     }
+
+                    else -> false
                 }
-                false
             }
             isClickable = true
             isFocusable = false
@@ -1676,7 +1897,7 @@ class FloatingStatusService : Service() {
             layoutParams = FrameLayout.LayoutParams(panelW, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
                 gravity = Gravity.START or Gravity.CENTER_VERTICAL
             }
-            setPadding(dp(10), dp(10), dp(10), dp(10))
+            setPadding(dp(0), dp(10), dp(0), dp(10))
             background = GradientDrawable().apply {
                 setColor(Color.parseColor("#CC0B0F16"))
                 cornerRadius = dp(16).toFloat()
@@ -1708,6 +1929,7 @@ class FloatingStatusService : Service() {
                     // Texture surface 可用时，绑定 VirtualDisplay 输出到该 surface，实现直出预览。
                     if (toolboxExpanded && isVirtualIsolatedMode()) {
                         updateVirtualPreviewAspectRatioBestEffort()
+                        updateVirtualPreviewBufferSizeBestEffort()
                         applyVirtualPreviewTransformBestEffort()
                         bindVirtualPreviewToSurfaceIfPossible()
                     }
@@ -1717,6 +1939,7 @@ class FloatingStatusService : Service() {
                     // 尺寸变化时更新 transform，保持等比显示。
                     if (toolboxExpanded && isVirtualIsolatedMode()) {
                         updateVirtualPreviewAspectRatioBestEffort()
+                        updateVirtualPreviewBufferSizeBestEffort()
                         applyVirtualPreviewTransformBestEffort()
                         bindVirtualPreviewToSurfaceIfPossible()
                     }
@@ -1810,136 +2033,55 @@ class FloatingStatusService : Service() {
             isFocusableInTouchMode = false
             visibility = if (isVirtualIsolatedMode()) View.VISIBLE else View.GONE
 
-            var gestureDownTime = 0L
-            var lastMoveInjectTime = 0L
-            var lastIndicatorTime = 0L
-            var downViewX = 0f
-            var downViewY = 0f
-            var moved = false
-
-            var gestureDisplayId = 0
-            var gestureContentW = 0
-            var gestureContentH = 0
-
-            fun mapForGesture(viewX: Float, viewY: Float): VirtualMappedPoint? {
-                if (!isVirtualIsolatedMode()) return null
-                val did = gestureDisplayId
-                if (did <= 0) return null
-
-                val wrap = toolboxPreviewWrapView ?: return null
-                val vw = wrap.width
-                val vh = wrap.height
-                if (vw <= 0 || vh <= 0) return null
-
-                val cw = gestureContentW.takeIf { it > 0 } ?: 848
-                val ch = gestureContentH.takeIf { it > 0 } ?: 480
-
-                val nx = (viewX / vw.toFloat()).coerceIn(0f, 1f)
-                val ny = (viewY / vh.toFloat()).coerceIn(0f, 1f)
-                val tx = (nx * cw.toFloat()).toInt().coerceIn(0, cw - 1)
-                val ty = (ny * ch.toFloat()).toInt().coerceIn(0, ch - 1)
-                return VirtualMappedPoint(displayId = did, x = tx, y = ty, w = cw, h = ch)
-            }
-
-            val moveThresholdPx = dp(6).toFloat()
-            val longPressThresholdMs = 450L
-            val moveInjectMinIntervalMs = 16L
-
             setOnTouchListener { _, ev ->
                 if (!isVirtualIsolatedMode()) return@setOnTouchListener false
 
-                when (ev.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> {
-                        gestureDownTime = android.os.SystemClock.uptimeMillis()
-                        lastMoveInjectTime = 0L
-                        lastIndicatorTime = 0L
-                        downViewX = ev.x
-                        downViewY = ev.y
-                        moved = false
-
-                        gestureDisplayId = VirtualDisplayController.getDisplayId() ?: 0
-                        val size = runCatching {
-                            com.example.autoglm.vdiso.ShizukuVirtualDisplayEngine.getLatestContentSize()
-                        }.getOrNull()
-                        gestureContentW = size?.first?.takeIf { it > 0 } ?: 0
-                        gestureContentH = size?.second?.takeIf { it > 0 } ?: 0
-
-                        val p = mapForGesture(ev.x, ev.y)
-                        if (p != null) {
-                            showLocalPreviewIndicatorAt(ev.x, ev.y)
-                            enqueueVirtualTouchCmd(
-                                VirtualTouchCmd(
-                                    displayId = p.displayId,
-                                    downTime = gestureDownTime,
-                                    eventTime = gestureDownTime,
-                                    action = MotionEvent.ACTION_DOWN,
-                                    x = p.x,
-                                    y = p.y,
-                                    ensureFocus = true,
-                                )
-                            )
-                        }
-                        true
-                    }
-
-                    MotionEvent.ACTION_MOVE -> {
-                        val dx = kotlin.math.abs(ev.x - downViewX)
-                        val dy = kotlin.math.abs(ev.y - downViewY)
-                        if (!moved && (dx >= moveThresholdPx || dy >= moveThresholdPx)) {
-                            moved = true
-                        }
-
-                        val now = android.os.SystemClock.uptimeMillis()
-                        if (now - lastMoveInjectTime >= moveInjectMinIntervalMs) {
-                            lastMoveInjectTime = now
-                            val p = mapForGesture(ev.x, ev.y)
-                            if (p != null) {
-                                if (now - lastIndicatorTime >= 33L) {
-                                    lastIndicatorTime = now
-                                    showLocalPreviewIndicatorAt(ev.x, ev.y)
-                                }
-                                enqueueVirtualTouchCmd(
-                                    VirtualTouchCmd(
-                                        displayId = p.displayId,
-                                        downTime = gestureDownTime,
-                                        eventTime = now,
-                                        action = MotionEvent.ACTION_MOVE,
-                                        x = p.x,
-                                        y = p.y,
-                                        ensureFocus = false,
-                                    )
-                                )
-                            }
-                        }
-                        true
-                    }
-
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        val upTime = android.os.SystemClock.uptimeMillis()
-                        val p = mapForGesture(ev.x, ev.y)
-
-                        if (p != null) {
-                            enqueueVirtualTouchCmd(
-                                VirtualTouchCmd(
-                                    displayId = p.displayId,
-                                    downTime = gestureDownTime,
-                                    eventTime = upTime,
-                                    action = MotionEvent.ACTION_UP,
-                                    x = p.x,
-                                    y = p.y,
-                                    ensureFocus = false,
-                                )
-                            )
-                        }
-                        hideLocalPreviewIndicator()
-                        gestureDisplayId = 0
-                        gestureContentW = 0
-                        gestureContentH = 0
-                        true
-                    }
-
-                    else -> true
+                val t0 = android.os.SystemClock.uptimeMillis()
+                val seq = try {
+                    ev.eventTime
+                } catch (_: Exception) {
+                    -1L
                 }
+
+                val wrap = toolboxPreviewWrapView
+                val vw = wrap?.width ?: 0
+                val vh = wrap?.height ?: 0
+                val action = ev.actionMasked
+                val now = android.os.SystemClock.uptimeMillis()
+
+                ensureTouchLayerThreadStarted()
+                val h = touchLayerHandler
+                if (h != null) {
+                    val sample = TouchLayerSample(
+                        action = action,
+                        viewX = ev.x,
+                        viewY = ev.y,
+                        viewW = vw,
+                        viewH = vh,
+                        eventTime = seq,
+                    )
+                    val MSG_MOVE = 2
+                    val MSG_OTHER = 1
+                    val what = if (action == MotionEvent.ACTION_MOVE) MSG_MOVE else MSG_OTHER
+
+                    if (what == MSG_MOVE) {
+                        if (now - touchLayerLastMovePostMs >= 50L) {
+                            touchLayerLastMovePostMs = now
+                            h.removeMessages(MSG_MOVE)
+                            h.obtainMessage(MSG_MOVE, sample).sendToTarget()
+                        }
+                    } else {
+                        h.obtainMessage(MSG_OTHER, sample).sendToTarget()
+                    }
+                }
+
+                val cost = android.os.SystemClock.uptimeMillis() - t0
+                val lagged = cost >= 16L
+                if (lagged) {
+                    logTouchLayerOnce("touch-lag: cost=${cost}ms action=$action seq=$seq", force = false)
+                }
+                updateTouchLayerPerfSuffix(action, seq, cost, lagged)
+                true
             }
         }
         previewWrap.addView(previewTouchLayer)
@@ -2031,7 +2173,8 @@ class FloatingStatusService : Service() {
             workerScope.launch {
                 runCatching {
                     VirtualDisplayController.ensureFocusedDisplayBestEffort()
-                    ShizukuBridge.execResult("input -d $did keyevent ${android.view.KeyEvent.KEYCODE_BACK}")
+                    virtualAsyncInputInjector.injectKeyEventAsync(did, KeyEvent.KEYCODE_BACK, KeyEvent.ACTION_DOWN)
+                    virtualAsyncInputInjector.injectKeyEventAsync(did, KeyEvent.KEYCODE_BACK, KeyEvent.ACTION_UP)
                 }
             }
         }
@@ -2171,6 +2314,10 @@ class FloatingStatusService : Service() {
                     }
 
                     if (!dragging && !wasLongPressActive) {
+                        if (!isVirtualIsolatedMode()) {
+                            openChatActivityBestEffort()
+                            return@setOnTouchListener true
+                        }
                         setToolboxExpanded(!toolboxExpanded, animate = true)
                     }
                     return@setOnTouchListener true
@@ -2646,6 +2793,9 @@ class FloatingStatusService : Service() {
         }
 
         holdDownAtMs = System.currentTimeMillis()
+
+        requestRecordingAudioFocus()
+
         val dir = File(cacheDir, "voice").apply { mkdirs() }
         val outFile = File(dir, "stt_${System.currentTimeMillis()}.wav")
 
@@ -2776,8 +2926,19 @@ class FloatingStatusService : Service() {
 
                 val trimmed = text.trim()
                 val onlyHash = trimmed.isNotEmpty() && trimmed.all { it == '#' }
-                if (trimmed.isEmpty() || onlyHash || trimmed.startsWith("识别失败")) {
-                    ChatEventBus.postText(MessageRole.ACTION, if (trimmed.isEmpty() || onlyHash) "没听清，请重试" else trimmed)
+                if (trimmed.isEmpty() || onlyHash || trimmed.startsWith("识别失败") || trimmed.startsWith("JWT请求失败")) {
+                    val msg = if (trimmed.isEmpty() || onlyHash) {
+                        "没听清，请重试"
+                    } else if (trimmed.startsWith("JWT请求失败")) {
+                        if (trimmed.contains("\"code\"\\s*:\\s*\"1301\"".toRegex()) || trimmed.contains("contentFilter", ignoreCase = true)) {
+                            "语音请求失败：内容安全策略拦截，请调整输入后重试"
+                        } else {
+                            "语音请求失败，请稍后重试"
+                        }
+                    } else {
+                        trimmed
+                    }
+                    ChatEventBus.postText(MessageRole.ACTION, msg)
                     setIdle(this@FloatingStatusService, "没听清，请重试")
                     mainHandler.postDelayed({
                         setIdle(this@FloatingStatusService, "等待指令")
@@ -2913,6 +3074,22 @@ class FloatingStatusService : Service() {
             var lastActionStreamKind: String? = null
             var lastAiStreamKind: String? = null
 
+            var aiStreamOpened = false
+            var aiStreamFirstAtMs = 0L
+            val aiStreamBootstrapBuf = StringBuilder()
+            var aiStreamBootstrapFlushPosted = false
+            val aiStreamBootstrapDelayMs = 140L
+            val aiStreamBootstrapMinChars = 14
+
+            val aiBootstrapFlushRunnable = Runnable {
+                aiStreamBootstrapFlushPosted = false
+                if (aiStreamOpened) return@Runnable
+                if (aiStreamBootstrapBuf.isEmpty()) return@Runnable
+                aiStreamOpened = true
+                ChatEventBus.postText(MessageRole.AI, aiStreamBootstrapBuf.toString(), kind = lastAiStreamKind)
+                aiStreamBootstrapBuf.setLength(0)
+            }
+
             fun isAdbBrokenMsg(s: String): Boolean {
                 val t = s.trim()
                 if (t.isEmpty()) return false
@@ -2930,9 +3107,13 @@ class FloatingStatusService : Service() {
                     val text = classified.text
                     if (text.isEmpty()) return@AndroidAgentCallback
 
-                    val shouldMerge = (isTaskRunningState || mergeStreamAfterStop) && kind == lastActionStreamKind && kind != "OPERATION"
-                    if (!(shouldMerge && ChatEventBus.appendToLastText(MessageRole.ACTION, text))) {
-                        ChatEventBus.postText(MessageRole.ACTION, text)
+                    val shouldMerge =
+                        (isTaskRunningState || mergeStreamAfterStop) &&
+                            !kind.startsWith("STEP") &&
+                            !kind.startsWith("OP_") &&
+                            kind != "OPERATION"
+                    if (!(shouldMerge && ChatEventBus.appendToLastText(MessageRole.ACTION, kind, text))) {
+                        ChatEventBus.postText(MessageRole.ACTION, text, kind = kind)
                     }
                     lastActionStreamKind = classified.nextLastKind
 
@@ -2945,9 +3126,8 @@ class FloatingStatusService : Service() {
                     } catch (_: Exception) {
                         null
                     }
-                    if (bytes != null) {
-                        ChatEventBus.postImage(bytes)
-                    }
+                    if (bytes == null || bytes.isEmpty()) return@AndroidAgentCallback
+                    ChatEventBus.postImage(bytes)
                 },
                 onAssistant = { msg ->
                     assistantTextUpdated = true
@@ -2956,31 +3136,88 @@ class FloatingStatusService : Service() {
                     val text = classified.text
                     if (text.isEmpty()) return@AndroidAgentCallback
 
-                    val shouldMerge = (isTaskRunningState || mergeStreamAfterStop) && kind == lastAiStreamKind
-                    if (!(shouldMerge && ChatEventBus.appendToLastText(MessageRole.AI, text))) {
-                        ChatEventBus.postText(MessageRole.AI, text)
+                    if (isTaskRunningState || mergeStreamAfterStop) {
+                        if (!aiStreamOpened) {
+                            val now = android.os.SystemClock.uptimeMillis()
+                            if (aiStreamFirstAtMs <= 0L) aiStreamFirstAtMs = now
+                            // 当 kind 发生变化时，先把已有缓冲作为独立气泡落地，避免不同阶段混到同一条。
+                            try {
+                                val prevKind = lastAiStreamKind
+                                if (prevKind != null && prevKind != kind && aiStreamBootstrapBuf.isNotEmpty()) {
+                                    aiStreamOpened = true
+                                    ChatEventBus.postText(MessageRole.AI, aiStreamBootstrapBuf.toString(), kind = prevKind)
+                                    aiStreamBootstrapBuf.setLength(0)
+                                }
+                            } catch (_: Exception) {
+                            }
+                            aiStreamBootstrapBuf.append(text)
+                            lastAiStreamKind = kind
+
+                            val shouldFlush =
+                                aiStreamBootstrapBuf.length >= aiStreamBootstrapMinChars ||
+                                    (now - aiStreamFirstAtMs) >= aiStreamBootstrapDelayMs ||
+                                    text.contains("\n")
+
+                            if (shouldFlush) {
+                                aiStreamOpened = true
+                                ChatEventBus.postText(MessageRole.AI, aiStreamBootstrapBuf.toString(), kind = kind)
+                                aiStreamBootstrapBuf.setLength(0)
+                            } else if (!aiStreamBootstrapFlushPosted) {
+                                aiStreamBootstrapFlushPosted = true
+                                mainHandler.postDelayed(aiBootstrapFlushRunnable, aiStreamBootstrapDelayMs)
+                            }
+                            return@AndroidAgentCallback
+                        }
+
+                        if (!ChatEventBus.appendToLastText(MessageRole.AI, kind, text)) {
+                            // Fallback: create a new message only if append fails unexpectedly.
+                            ChatEventBus.postText(MessageRole.AI, text, kind = kind)
+                        }
+                    } else {
+                        ChatEventBus.postText(MessageRole.AI, text, kind = kind)
                     }
-                    lastAiStreamKind = classified.nextLastKind
                 },
                 onError = { msg ->
-                    ChatEventBus.postText(MessageRole.ACTION, "错误：$msg")
-                    if (isAdbBrokenMsg(msg)) {
-                        try {
-                            TaskControl.forceStopPython()
-                        } catch (_: Exception) {
-                        }
-                        setIdle(this@FloatingStatusService, "ADB异常")
-                    }
+                    val t = msg.trim()
+                    if (t.isEmpty()) return@AndroidAgentCallback
+                    ChatEventBus.postText(MessageRole.ACTION, t)
+                    update(this@FloatingStatusService, t)
                 },
                 onDone = { msg ->
                     assistantTextUpdated = true
                     lastAiStreamKind = "SUMMARY"
                     mergeStreamAfterStop = false
-                    ChatEventBus.postText(MessageRole.AI, msg)
+
+                    // Flush any pending bootstrap buffer before final summary.
+                    if (!aiStreamOpened && aiStreamBootstrapBuf.isNotEmpty()) {
+                        aiStreamOpened = true
+                        ChatEventBus.postText(MessageRole.AI, aiStreamBootstrapBuf.toString(), kind = lastAiStreamKind)
+                        aiStreamBootstrapBuf.setLength(0)
+                    }
+                    ChatEventBus.postText(MessageRole.AI, msg, kind = lastAiStreamKind)
                     setIdle(this@FloatingStatusService, "等待指令")
                     try {
                         showSummaryBubble(this@FloatingStatusService, msg)
                     } catch (_: Exception) {
+                    }
+                },
+                onTapIndicator = { x, y ->
+                    mainHandler.post {
+                        try {
+                            val execEnv = ConfigManager(this@FloatingStatusService).getExecutionEnvironment()
+                            if (execEnv == ConfigManager.EXEC_ENV_VIRTUAL) {
+                                val did = VirtualDisplayController.getDisplayId() ?: 0
+                                if (did > 0) {
+                                    TapIndicatorService.showAtOnDisplay(this@FloatingStatusService, x, y, did)
+                                } else {
+                                    TapIndicatorService.showAt(this@FloatingStatusService, x, y)
+                                }
+                            } else {
+                                TapIndicatorService.showAt(this@FloatingStatusService, x, y)
+                            }
+                        } catch (_: Exception) {
+                            TapIndicatorService.showAt(this@FloatingStatusService, x, y)
+                        }
                     }
                 },
             )
@@ -3051,6 +3288,9 @@ class FloatingStatusService : Service() {
             return
         }
 
+        // 以用户消息作为“任务边界”：确保下一步任务的流式输出不会合并到上一轮旧气泡。
+        // 同时这条记录也能让聊天界面展示“当前执行的指令”。
+        ChatEventBus.postText(MessageRole.USER, task)
         ChatEventBus.postText(MessageRole.AI, "正在为您执行...")
     }
 
@@ -3103,6 +3343,59 @@ class FloatingStatusService : Service() {
         }
 
         recordingFile = null
+
+        abandonRecordingAudioFocus()
+    }
+
+    private fun requestRecordingAudioFocus(): Boolean {
+        return try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val listener = audioFocusListener ?: AudioManager.OnAudioFocusChangeListener { }.also {
+                    audioFocusListener = it
+                }
+                val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    .setOnAudioFocusChangeListener(listener)
+                    .build()
+                audioFocusRequest = req
+                am.requestAudioFocus(req) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            } else {
+                val listener = audioFocusListener ?: AudioManager.OnAudioFocusChangeListener { }.also {
+                    audioFocusListener = it
+                }
+                @Suppress("DEPRECATION")
+                am.requestAudioFocus(listener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun abandonRecordingAudioFocus() {
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val req = audioFocusRequest
+                if (req != null) {
+                    am.abandonAudioFocusRequest(req)
+                }
+            } else {
+                val listener = audioFocusListener
+                if (listener != null) {
+                    @Suppress("DEPRECATION")
+                    am.abandonAudioFocus(listener)
+                }
+            }
+        } catch (_: Exception) {
+        } finally {
+            audioFocusRequest = null
+        }
     }
 
     private fun finalizeWavFile(file: File, sampleRate: Int, channels: Int) {
@@ -3185,6 +3478,7 @@ class FloatingStatusService : Service() {
         private val onAssistant: (String) -> Unit,
         private val onError: (String) -> Unit,
         private val onDone: (String) -> Unit,
+        private val onTapIndicator: (Float, Float) -> Unit,
     ) {
         fun on_action(text: String) {
             onAction(text)
@@ -3204,6 +3498,10 @@ class FloatingStatusService : Service() {
 
         fun on_done(text: String) {
             onDone(text)
+        }
+
+        fun on_tap_indicator(x: Float, y: Float) {
+            onTapIndicator(x, y)
         }
     }
 
@@ -3328,6 +3626,7 @@ class FloatingStatusService : Service() {
             invalidateSelf()
         }
 
+        @Suppress("OVERRIDE_DEPRECATION")
         override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
     }
 

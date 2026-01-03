@@ -109,11 +109,16 @@ class MonitorActivity : ComponentActivity() {
                 surfaceReady = true
                 val surface = holder.surface
 
-                val dm = resources.displayMetrics
-                val isLandscape = dm.widthPixels >= dm.heightPixels
-                val vdW = if (isLandscape) 854 else 480
-                val vdH = if (isLandscape) 480 else 854
-                val vdDpi = if (vdW == 480 || vdH == 480) 142 else 440
+                val (vdW, vdH) = try {
+                    ConfigManager(this@MonitorActivity).getVirtualDisplaySize(isLandscape = false)
+                } catch (_: Exception) {
+                    480 to 848
+                }
+                val vdDpi = try {
+                    ConfigManager(this@MonitorActivity).getVirtualDisplayDpi()
+                } catch (_: Exception) {
+                    ConfigManager.DEFAULT_VIRTUAL_DISPLAY_DPI
+                }
                 val r = ShizukuVirtualDisplaySurfaceStreamer.start(
                     ShizukuVirtualDisplaySurfaceStreamer.Args(
                         name = "AutoGLM-Virtual-Preview",

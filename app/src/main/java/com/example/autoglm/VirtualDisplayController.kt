@@ -1,6 +1,8 @@
 package com.example.autoglm
 
+import android.app.ActivityOptions
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.util.Base64
 import android.util.Log
@@ -8,10 +10,12 @@ import android.media.ImageReader
 import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
+import android.view.KeyEvent
 import java.io.ByteArrayOutputStream
 import kotlin.concurrent.thread
 import com.example.autoglm.vdiso.ShizukuVirtualDisplayEngine
 import com.example.autoglm.ShizukuBridge
+import com.example.autoglm.input.VirtualAsyncInputInjector
 
 object VirtualDisplayController {
     @Volatile
@@ -55,11 +59,11 @@ object VirtualDisplayController {
             return null
         }
 
-        val dm = context.resources.displayMetrics
-        val isLandscape = dm.widthPixels >= dm.heightPixels
-        // 480P 分辨率必须做 16 对齐，避免部分硬件/驱动在 stride/padding 上出现花屏。
-        val vdW = if (isLandscape) 848 else 480
-        val vdH = if (isLandscape) 480 else 848
+        val (vdW, vdH) = try {
+            ConfigManager(context).getVirtualDisplaySize(isLandscape = false)
+        } catch (_: Exception) {
+            480 to 848
+        }
         val vdDpi = try {
             ConfigManager(context).getVirtualDisplayDpi().takeIf { it in 72..640 } ?: ConfigManager.DEFAULT_VIRTUAL_DISPLAY_DPI
         } catch (_: Exception) {
@@ -196,6 +200,65 @@ object VirtualDisplayController {
         return runCatching { ShizukuVirtualDisplayEngine.ensureFocusedDisplay(did) }.isSuccess
     }
 
+    private val asyncInputInjector by lazy { VirtualAsyncInputInjector() }
+
+    @JvmStatic
+    fun injectTapBestEffort(displayId: Int, x: Int, y: Int) {
+        if (displayId <= 0) return
+        if (!ShizukuBridge.pingBinder() || !ShizukuBridge.hasPermission()) return
+        val downTime = android.os.SystemClock.uptimeMillis()
+        runCatching {
+            asyncInputInjector.injectSingleTouchAsync(displayId, downTime, x.toFloat(), y.toFloat(), android.view.MotionEvent.ACTION_DOWN)
+            asyncInputInjector.injectSingleTouchAsync(displayId, downTime, x.toFloat(), y.toFloat(), android.view.MotionEvent.ACTION_UP)
+        }
+    }
+
+    @JvmStatic
+    fun injectSwipeBestEffort(displayId: Int, startX: Int, startY: Int, endX: Int, endY: Int, durationMs: Long) {
+        if (displayId <= 0) return
+        if (!ShizukuBridge.pingBinder() || !ShizukuBridge.hasPermission()) return
+
+        val downTime = android.os.SystemClock.uptimeMillis()
+        val dur = durationMs.coerceAtLeast(1)
+        runCatching {
+            asyncInputInjector.injectSingleTouchAsync(displayId, downTime, startX.toFloat(), startY.toFloat(), android.view.MotionEvent.ACTION_DOWN)
+            val startTime = android.os.SystemClock.uptimeMillis()
+            val endTime = startTime + dur
+            while (android.os.SystemClock.uptimeMillis() < endTime) {
+                val elapsed = android.os.SystemClock.uptimeMillis() - startTime
+                val frac = (elapsed.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+                val ix = (startX + (endX - startX) * frac).toInt()
+                val iy = (startY + (endY - startY) * frac).toInt()
+                asyncInputInjector.injectSingleTouchAsync(displayId, downTime, ix.toFloat(), iy.toFloat(), android.view.MotionEvent.ACTION_MOVE)
+                try {
+                    Thread.sleep(16L)
+                } catch (_: Exception) {
+                }
+            }
+            asyncInputInjector.injectSingleTouchAsync(displayId, downTime, endX.toFloat(), endY.toFloat(), android.view.MotionEvent.ACTION_UP)
+        }
+    }
+
+    @JvmStatic
+    fun injectBackBestEffort(displayId: Int) {
+        if (displayId <= 0) return
+        if (!ShizukuBridge.pingBinder() || !ShizukuBridge.hasPermission()) return
+        runCatching {
+            asyncInputInjector.injectKeyEventAsync(displayId, KeyEvent.KEYCODE_BACK, KeyEvent.ACTION_DOWN)
+            asyncInputInjector.injectKeyEventAsync(displayId, KeyEvent.KEYCODE_BACK, KeyEvent.ACTION_UP)
+        }
+    }
+
+    @JvmStatic
+    fun injectHomeBestEffort(displayId: Int) {
+        if (displayId <= 0) return
+        if (!ShizukuBridge.pingBinder() || !ShizukuBridge.hasPermission()) return
+        runCatching {
+            asyncInputInjector.injectKeyEventAsync(displayId, KeyEvent.KEYCODE_HOME, KeyEvent.ACTION_DOWN)
+            asyncInputInjector.injectKeyEventAsync(displayId, KeyEvent.KEYCODE_HOME, KeyEvent.ACTION_UP)
+        }
+    }
+
     fun hardResetOverlayAsync(context: Context) {
         thread(start = true, name = "VirtualDisplayHardReset") {
             hardResetOverlay(context)
@@ -252,8 +315,18 @@ object VirtualDisplayController {
     private const val TAG = "VirtualDisplay"
 
     private fun showWelcomePresentationOnDisplay(appContext: Context, displayId: Int) {
-        // MIUI may reject Presentation windows on shell-owned virtual displays.
-        // Prefer launching a dedicated Activity on the target display via Shizuku shell.
+        runCatching {
+            val intent = Intent().apply {
+                setClassName(appContext.packageName, "${appContext.packageName}.WelcomeActivity")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val options = ActivityOptions.makeBasic()
+            options.setLaunchDisplayId(displayId)
+            appContext.startActivity(intent, options.toBundle())
+            runCatching { ShizukuVirtualDisplayEngine.ensureFocusedDisplay(displayId) }
+            return
+        }
+
         if (ShizukuBridge.pingBinder() && ShizukuBridge.hasPermission()) {
             thread(start = true, name = "ShowWelcomeOnDisplay") {
                 val component = "${appContext.packageName}/.WelcomeActivity"

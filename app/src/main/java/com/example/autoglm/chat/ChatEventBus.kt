@@ -8,9 +8,9 @@ object ChatEventBus {
     sealed class Event {
         data class StartTaskFromSpeech(val recognizedText: String) : Event()
 
-        data class AppendText(val role: MessageRole, val text: String) : Event()
+        data class AppendText(val role: MessageRole, val kind: String?, val text: String) : Event()
 
-        data class AppendToLastText(val role: MessageRole, val text: String) : Event()
+        data class AppendToLastText(val role: MessageRole, val kind: String?, val text: String) : Event()
 
         data class AppendImage(val imageBytes: ByteArray) : Event()
     }
@@ -25,39 +25,100 @@ object ChatEventBus {
         _events.tryEmit(event)
     }
 
-    fun postText(role: MessageRole, text: String) {
+    fun postText(role: MessageRole, text: String, kind: String? = null) {
         val t = text.trimEnd()
         if (t.isEmpty()) return
         val m = ChatMessage(
             id = nextId(),
             role = role,
             type = MessageType.TEXT,
+            kind = kind,
             text = t,
         )
         synchronized(messageBuffer) {
             messageBuffer.add(m)
         }
-        post(Event.AppendText(role, t))
+        post(Event.AppendText(role, kind, t))
     }
 
-    fun appendToLastText(role: MessageRole, text: String): Boolean {
+    fun recordText(role: MessageRole, text: String, kind: String? = null) {
+        val t = text.trimEnd()
+        if (t.isEmpty()) return
+        val m = ChatMessage(
+            id = nextId(),
+            role = role,
+            type = MessageType.TEXT,
+            kind = kind,
+            text = t,
+        )
+        synchronized(messageBuffer) {
+            messageBuffer.add(m)
+        }
+    }
+
+    fun appendToLastText(role: MessageRole, kind: String?, text: String): Boolean {
         val t = text.trimEnd()
         if (t.isEmpty()) return false
 
         val appended = synchronized(messageBuffer) {
-            val last = messageBuffer.lastOrNull() ?: return@synchronized false
-            if (last.role != role) return@synchronized false
-            if (last.type != MessageType.TEXT) return@synchronized false
-            val lastText = last.text.orEmpty()
-            val merged = lastText + t
-            messageBuffer[messageBuffer.size - 1] = last.copy(text = merged)
-            true
+            var i = messageBuffer.size - 1
+            while (i >= 0) {
+                val m = messageBuffer[i]
+                if (m.role == MessageRole.USER) {
+                    // 以用户消息作为“任务边界”：新任务的 AI/ACTION 不允许合并到上一轮的旧气泡。
+                    return@synchronized false
+                }
+                if (role == MessageRole.AI && m.role == MessageRole.ACTION && m.kind == "STEP") {
+                    // 以步骤消息作为“阶段边界”：新步骤的 AI/THINK 不允许合并到上一步的 AI 气泡。
+                    return@synchronized false
+                }
+                if (m.role == role && m.type == MessageType.TEXT) {
+                    // 同 role 但不同 kind，说明已经进入新的阶段/步骤，不允许回溯合并到更早的旧气泡。
+                    if (m.kind != kind) {
+                        return@synchronized false
+                    }
+                    val merged = m.text.orEmpty() + t
+                    messageBuffer[i] = m.copy(text = merged)
+                    return@synchronized true
+                }
+                i--
+            }
+            false
         }
 
         if (appended) {
-            post(Event.AppendToLastText(role, t))
+            post(Event.AppendToLastText(role, kind, t))
         }
         return appended
+    }
+
+    fun recordAppendToLastText(role: MessageRole, kind: String?, text: String): Boolean {
+        val t = text.trimEnd()
+        if (t.isEmpty()) return false
+        return synchronized(messageBuffer) {
+            var i = messageBuffer.size - 1
+            while (i >= 0) {
+                val m = messageBuffer[i]
+                if (m.role == MessageRole.USER) {
+                    // 以用户消息作为“任务边界”：新任务的 AI/ACTION 不允许合并到上一轮的旧气泡。
+                    return@synchronized false
+                }
+                if (role == MessageRole.AI && m.role == MessageRole.ACTION && m.kind == "STEP") {
+                    // 以步骤消息作为“阶段边界”：新步骤的 AI/THINK 不允许合并到上一步的 AI 气泡。
+                    return@synchronized false
+                }
+                if (m.role == role && m.type == MessageType.TEXT) {
+                    // 同 role 但不同 kind，说明已经进入新的阶段/步骤，不允许回溯合并到更早的旧气泡。
+                    if (m.kind != kind) {
+                        return@synchronized false
+                    }
+                    messageBuffer[i] = m.copy(text = m.text.orEmpty() + t)
+                    return@synchronized true
+                }
+                i--
+            }
+            false
+        }
     }
 
     fun postImage(bytes: ByteArray) {
@@ -72,6 +133,19 @@ object ChatEventBus {
             messageBuffer.add(m)
         }
         post(Event.AppendImage(bytes))
+    }
+
+    fun recordImage(bytes: ByteArray) {
+        if (bytes.isEmpty()) return
+        val m = ChatMessage(
+            id = nextId(),
+            role = MessageRole.AI,
+            type = MessageType.IMAGE,
+            imageBytes = bytes,
+        )
+        synchronized(messageBuffer) {
+            messageBuffer.add(m)
+        }
     }
 
     fun snapshotMessages(): List<ChatMessage> {

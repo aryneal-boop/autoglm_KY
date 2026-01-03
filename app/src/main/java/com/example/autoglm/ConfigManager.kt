@@ -101,6 +101,36 @@ class ConfigManager(context: Context) {
         prefs.edit().putString(KEY_ADB_CONNECT_MODE, value.trim()).apply()
     }
 
+    fun getVirtualDisplayDpi(): Int {
+        return prefs.getInt(KEY_VIRTUAL_DISPLAY_DPI, DEFAULT_VIRTUAL_DISPLAY_DPI)
+            .takeIf { it in 72..640 }
+            ?: DEFAULT_VIRTUAL_DISPLAY_DPI
+    }
+
+    fun setVirtualDisplayDpi(value: Int) {
+        val v = value.takeIf { it in 72..640 } ?: DEFAULT_VIRTUAL_DISPLAY_DPI
+        prefs.edit().putInt(KEY_VIRTUAL_DISPLAY_DPI, v).apply()
+    }
+
+    fun getVirtualDisplayResolutionPreset(): String {
+        return prefs.getString(KEY_VIRTUAL_DISPLAY_RESOLUTION, DEFAULT_VIRTUAL_DISPLAY_RESOLUTION)
+            .orEmpty()
+            .ifEmpty { DEFAULT_VIRTUAL_DISPLAY_RESOLUTION }
+            .takeIf { it in VIRTUAL_DISPLAY_RESOLUTION_PRESETS }
+            ?: DEFAULT_VIRTUAL_DISPLAY_RESOLUTION
+    }
+
+    fun setVirtualDisplayResolutionPreset(value: String) {
+        val v = value.takeIf { it in VIRTUAL_DISPLAY_RESOLUTION_PRESETS } ?: DEFAULT_VIRTUAL_DISPLAY_RESOLUTION
+        prefs.edit().putString(KEY_VIRTUAL_DISPLAY_RESOLUTION, v).apply()
+    }
+
+    fun getVirtualDisplaySize(isLandscape: Boolean): Pair<Int, Int> {
+        val preset = getVirtualDisplayResolutionPreset()
+        val (w, h) = presetToSize(preset)
+        return if (isLandscape) (h to w) else (w to h)
+    }
+
     companion object {
         private const val PREFS_NAME = "autoglm_secure_config"
 
@@ -115,6 +145,10 @@ class ConfigManager(context: Context) {
 
         private const val KEY_ADB_CONNECT_MODE = "ADB_CONNECT_MODE"
 
+        private const val KEY_VIRTUAL_DISPLAY_DPI = "VIRTUAL_DISPLAY_DPI"
+
+        private const val KEY_VIRTUAL_DISPLAY_RESOLUTION = "VIRTUAL_DISPLAY_RESOLUTION"
+
         const val EXEC_ENV_MAIN = "MAIN_SCREEN"
         const val EXEC_ENV_VIRTUAL = "VIRTUAL_ISOLATED"
 
@@ -124,5 +158,29 @@ class ConfigManager(context: Context) {
         const val DEFAULT_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
         const val DEFAULT_API_KEY = ""
         const val DEFAULT_MODEL_NAME = "autoglm-phone"
+
+        const val DEFAULT_VIRTUAL_DISPLAY_DPI = 142
+
+        const val RES_480P = "480P"
+        const val RES_720P = "720P"
+        const val RES_1080P = "1080P"
+
+        val VIRTUAL_DISPLAY_RESOLUTION_PRESETS = setOf(RES_480P, RES_720P, RES_1080P)
+        const val DEFAULT_VIRTUAL_DISPLAY_RESOLUTION = RES_480P
+
+        private fun align16(value: Int): Int {
+            val v = value.coerceAtLeast(1)
+            val down = (v / 16) * 16
+            val up = ((v + 15) / 16) * 16
+            return if (v - down <= up - v) down.coerceAtLeast(16) else up
+        }
+
+        private fun presetToSize(preset: String): Pair<Int, Int> {
+            return when (preset) {
+                RES_720P -> align16(720) to align16(1280)
+                RES_1080P -> align16(1088) to align16(1920)
+                else -> align16(480) to align16(848)
+            }
+        }
     }
 }

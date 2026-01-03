@@ -2,10 +2,12 @@ package com.example.autoglm
 
 import android.os.Bundle
 import android.os.Build
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.RadioButton
 import android.widget.RadioGroup
+import android.widget.Spinner
 import androidx.activity.ComponentActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -50,6 +52,7 @@ class SettingsActivity : ComponentActivity() {
         val etApiKey = findViewById<EditText>(R.id.etApiKey)
         val etModelName = findViewById<EditText>(R.id.etModelName)
         val etVirtualDisplayDpi = findViewById<EditText>(R.id.etVirtualDisplayDpi)
+        val spVirtualDisplayResolution = findViewById<Spinner>(R.id.spVirtualDisplayResolution)
         val rgExecEnv = findViewById<RadioGroup>(R.id.rgExecutionEnvironment)
         val rbExecEnvMain = findViewById<RadioButton>(R.id.rbExecEnvMain)
         val rbExecEnvVirtual = findViewById<RadioButton>(R.id.rbExecEnvVirtual)
@@ -60,6 +63,18 @@ class SettingsActivity : ComponentActivity() {
         etApiKey.setText(config.apiKey)
         etModelName.setText(config.modelName)
         etVirtualDisplayDpi.setText(configManager.getVirtualDisplayDpi().toString())
+
+        val resolutionItems = listOf(
+            ConfigManager.RES_480P,
+            ConfigManager.RES_720P,
+            ConfigManager.RES_1080P,
+        )
+        val resolutionAdapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, resolutionItems)
+        resolutionAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        spVirtualDisplayResolution.adapter = resolutionAdapter
+        val savedResolution = configManager.getVirtualDisplayResolutionPreset()
+        val selectionIndex = resolutionItems.indexOf(savedResolution).takeIf { it >= 0 } ?: 0
+        spVirtualDisplayResolution.setSelection(selectionIndex)
 
         val execEnv = configManager.getExecutionEnvironment()
         if (execEnv == ConfigManager.EXEC_ENV_VIRTUAL) {
@@ -80,6 +95,11 @@ class SettingsActivity : ComponentActivity() {
                 ?.takeIf { it in 72..640 }
                 ?: ConfigManager.DEFAULT_VIRTUAL_DISPLAY_DPI
             configManager.setVirtualDisplayDpi(newDpi)
+
+            val selectedResolution = spVirtualDisplayResolution.selectedItem as? String
+            if (!selectedResolution.isNullOrBlank()) {
+                configManager.setVirtualDisplayResolutionPreset(selectedResolution)
+            }
 
             val selected = rgExecEnv.checkedRadioButtonId
             val newExecEnv = if (selected == R.id.rbExecEnvVirtual) {
