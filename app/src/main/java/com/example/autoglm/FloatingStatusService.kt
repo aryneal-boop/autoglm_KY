@@ -2254,13 +2254,25 @@ class FloatingStatusService : Service() {
             "切换本app"
         ) {
             try {
-                val i = Intent().apply {
-                    component = ComponentName(context, ChatActivity::class.java)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                    addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                runCatching {
+                    val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+                        addCategory(Intent.CATEGORY_HOME)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(homeIntent)
                 }
-                context.startActivity(i)
+
+                mainHandler.postDelayed({
+                    runCatching {
+                        val i = Intent().apply {
+                            component = ComponentName(context, ChatActivity::class.java)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                        }
+                        context.startActivity(i)
+                    }
+                }, 120L)
             } catch (_: Exception) {
             }
         }

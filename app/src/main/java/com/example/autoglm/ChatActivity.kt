@@ -10,6 +10,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
+import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
@@ -82,6 +83,8 @@ import java.io.File
 import java.io.RandomAccessFile
 import java.util.concurrent.atomic.AtomicLong
 import rikka.shizuku.Shizuku
+import com.example.autoglm.update.UpdateChecker
+import com.example.autoglm.update.UpdateInfo
 
 class ChatActivity : ComponentActivity() {
 
@@ -170,6 +173,8 @@ class ChatActivity : ComponentActivity() {
             forceScrollToBottom(smooth = true)
         }
     }
+
+    private var updateCheckInFlight: Boolean = false
 
     private fun hideInterventionUiLocalIfMatching(requestId: Long) {
         runOnUiThread {
@@ -1022,6 +1027,82 @@ class ChatActivity : ComponentActivity() {
         super.onResume()
         updateAdbStatus()
         syncPendingInterventionFromGate()
+        checkUpdateOnEnterChat()
+    }
+
+    private fun checkUpdateOnEnterChat() {
+        if (updateCheckInFlight) return
+        updateCheckInFlight = true
+
+        lifecycleScope.launch {
+            try {
+                val latest = UpdateChecker.fetchLatestInfo()
+                if (latest == null) return@launch
+                if (!UpdateChecker.isUpdateNeeded(this@ChatActivity, latest)) return@launch
+
+                val shouldPrompt = latest.forceUpdate || UpdateChecker.shouldPrompt(this@ChatActivity, latest.versionCode)
+                if (!shouldPrompt) return@launch
+
+                if (!latest.forceUpdate) {
+                    UpdateChecker.markPrompted(this@ChatActivity, latest.versionCode)
+                }
+
+                runOnUiThread {
+                    showUpdateDialog(latest)
+                }
+            } catch (_: Exception) {
+            } finally {
+                updateCheckInFlight = false
+            }
+        }
+    }
+
+    private fun showUpdateDialog(info: UpdateInfo) {
+        try {
+            val url = info.downloadPage.ifBlank { info.apkUrl }
+            if (url.isBlank()) return
+
+            val msg = buildString {
+                append("最新版本：")
+                append(info.versionName)
+                append("（")
+                append(info.versionCode)
+                append(")\n\n")
+                if (info.changelog.isNotBlank()) {
+                    append(info.changelog.trim())
+                } else {
+                    append("已发布新版本，建议更新后继续使用。")
+                }
+            }
+
+            val dlg = AlertDialog.Builder(this)
+                .setTitle("发现新版本")
+                .setMessage(msg)
+                .setCancelable(!info.forceUpdate)
+                .setPositiveButton("立即更新") { _, _ ->
+                    try {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    } catch (_: Exception) {
+                        Toast.makeText(this, "无法打开下载链接", Toast.LENGTH_SHORT).show()
+                    }
+                }
+
+            if (!info.forceUpdate) {
+                dlg.setNegativeButton("稍后再说") { d, _ ->
+                    try {
+                        d.dismiss()
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+
+            dlg.show()
+
+            if (info.forceUpdate) {
+                UpdateChecker.markPrompted(this@ChatActivity, info.versionCode)
+            }
+        } catch (_: Exception) {
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
