@@ -176,8 +176,39 @@ class AutoGLMHandler:
                 except Exception:
                     pass
 
+            def _confirmation_callback(message: str) -> bool:
+                try:
+                    from java import jclass
+
+                    Gate = jclass("com.example.autoglm.UserInterventionGate")
+                    return bool(Gate.requestConfirmation(str(message or "")))
+                except Exception:
+                    try:
+                        resp = input(f"确认执行 {message}？(y/n): ")
+                        return str(resp or "").strip().lower() == "y"
+                    except Exception:
+                        return False
+
+            def _takeover_callback(message: str) -> None:
+                try:
+                    from java import jclass
+
+                    Gate = jclass("com.example.autoglm.UserInterventionGate")
+                    Gate.requestTakeover(str(message or ""))
+                    return
+                except Exception:
+                    try:
+                        print(f"请手动完成: {message}")
+                        input("完成后按回车继续...")
+                    except Exception:
+                        pass
+
             model_client = ModelClient(ModelConfig())
-            action_handler = ActionHandler(device_id=None)
+            action_handler = ActionHandler(
+                device_id=None,
+                confirmation_callback=_confirmation_callback,
+                takeover_callback=_takeover_callback,
+            )
 
             context: list[dict[str, Any]] = []
             step_count = 0

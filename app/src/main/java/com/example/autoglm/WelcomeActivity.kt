@@ -27,4 +27,9 @@ class WelcomeActivity : Activity() {
             }
         }
     }
+
+    override fun onBackPressed() {
+        // 欢迎界面作为虚拟屏的兜底界面：吞掉返回键，避免退出后虚拟屏变黑或落入不可控状态。
+        return
+    }
 }

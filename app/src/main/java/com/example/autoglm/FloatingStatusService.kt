@@ -70,6 +70,8 @@ import com.example.autoglm.chat.MessageRole
 import com.example.autoglm.input.VirtualAsyncInputInjector
 import com.example.autoglm.input.InputHelper
 import com.example.autoglm.ui.GlowButton
+import com.example.autoglm.vdiso.ImeFocusDeadlockController
+import com.example.autoglm.UserInterventionGate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -138,6 +140,18 @@ class FloatingStatusService : Service() {
     private var toolboxPreviewBitmap: Bitmap? = null
     private var toolboxPreviewTicker: Runnable? = null
 
+    private var toolboxInterventionButtonView: View? = null
+    private var toolboxInterventionRejectButtonView: View? = null
+
+    @Volatile
+    private var interventionRequestId: Long = 0L
+
+    @Volatile
+    private var interventionRequestType: String = ""
+
+    @Volatile
+    private var interventionRequestMessage: String = ""
+
     private val mainScreenPreviewInFlight = AtomicBoolean(false)
 
     private val virtualScreenPreviewInFlight = AtomicBoolean(false)
@@ -161,6 +175,18 @@ class FloatingStatusService : Service() {
     private var toolboxLayoutParams: WindowManager.LayoutParams? = null
 
     private var tempFocusableEnabled: Boolean = false
+
+    @Volatile
+    private var focusDeadlockLocked: Boolean = false
+
+    private var focusDeadlockBlockerView: View? = null
+    private var focusDeadlockBlockerLayoutParams: WindowManager.LayoutParams? = null
+
+    private var focusDeadlockTipView: TextView? = null
+    private var focusDeadlockTipLayoutParams: WindowManager.LayoutParams? = null
+
+    private var imeFocusDeadlockController: ImeFocusDeadlockController? = null
+    private var focusDeadlockTipAutoHideRunnable: Runnable? = null
 
     private var isTaskRunningState: Boolean = false
     private var mergeStreamAfterStop: Boolean = false
@@ -364,7 +390,7 @@ class FloatingStatusService : Service() {
             )
         }
         if (panel != null && !toolboxExpanded) {
-            panel.translationX = if (dockRight) panelW.toFloat() else (-panelW).toFloat()
+            panel.translationX = if (dockOnRight) panelW.toFloat() else (-panelW).toFloat()
         }
     }
 
@@ -418,6 +444,17 @@ class FloatingStatusService : Service() {
 
         val did = VirtualDisplayController.getDisplayId() ?: 0
         if (did <= 0) return
+
+        // 点击悬浮工具箱里的虚拟屏预览时，优先把焦点切到虚拟屏幕。
+        // 部分 ROM 上如果虚拟屏没有获得焦点，后续 input -d 注入可能不会生效。
+        if (sample.action == MotionEvent.ACTION_DOWN) {
+            val now = android.os.SystemClock.uptimeMillis()
+            val last = lastEnsureVirtualFocusAtMs
+            if (last <= 0L || now - last >= 400L) {
+                lastEnsureVirtualFocusAtMs = now
+                runCatching { VirtualDisplayController.ensureFocusedDisplayBestEffort() }
+            }
+        }
 
         val cwCh = runCatching { com.example.autoglm.vdiso.ShizukuVirtualDisplayEngine.getLatestContentSize() }.getOrNull()
         val cw = cwCh?.first?.takeIf { it > 0 } ?: 720
@@ -543,11 +580,6 @@ class FloatingStatusService : Service() {
         if (lagged) touchLayerLagCount++
         touchLayerLastAction = action
         touchLayerLastSeq = seq
-
-        toolboxModeSuffix = "touch=${touchLayerLastCostMs}ms max=${touchLayerMaxCostMs}ms lag=${touchLayerLagCount}/${touchLayerEventCount} a=$action"
-        mainHandler.post {
-            updateToolboxModeLabel()
-        }
     }
 
     private fun injectVirtualTapFromToolboxPreviewBestEffort(viewX: Float, viewY: Float) {
@@ -1556,6 +1588,18 @@ class FloatingStatusService : Service() {
                 startForeground(NOTIFICATION_ID, notification)
             }
         }
+
+        imeFocusDeadlockController = ImeFocusDeadlockController(workerScope).apply {
+            callback = object : ImeFocusDeadlockController.Callback {
+                override fun onLockStateChanged(locked: Boolean, displayId: Int, detail: String) {
+                    Log.i(TAG, "focus-deadlock: locked=$locked did=$displayId detail=${detail.take(220)}")
+                    mainHandler.post {
+                        applyFocusDeadlockUiState(locked, displayId)
+                    }
+                }
+            }
+            start()
+        }
     }
 
     private fun startForegroundInternal(contentText: String) {
@@ -1652,10 +1696,35 @@ class FloatingStatusService : Service() {
                 }
             }
             ACTION_UPDATE -> {
-                val text = intent.getStringExtra(EXTRA_TEXT).orEmpty()
+                val hasText = try { intent.hasExtra(EXTRA_TEXT) } catch (_: Exception) { false }
+                val text = if (hasText) intent.getStringExtra(EXTRA_TEXT).orEmpty() else ""
+
+                val hasIntervention = try { intent.hasExtra(EXTRA_INTERVENTION_REQUEST_ID) } catch (_: Exception) { false }
+                val reqId = if (hasIntervention) intent.getLongExtra(EXTRA_INTERVENTION_REQUEST_ID, 0L) else 0L
+                val reqType = if (hasIntervention) intent.getStringExtra(EXTRA_INTERVENTION_REQUEST_TYPE).orEmpty() else ""
+                val reqMsg = if (hasIntervention) intent.getStringExtra(EXTRA_INTERVENTION_REQUEST_MESSAGE).orEmpty() else ""
+
                 mainHandler.post {
+                    ensureViewCreatedIfNeeded()
                     applyLayoutParamsIfPossible()
-                    updateText(text)
+
+                    if (hasIntervention) {
+                        // 空 type/message 视为清理。
+                        if (reqType.isBlank() && reqMsg.isBlank()) {
+                            interventionRequestId = 0L
+                            interventionRequestType = ""
+                            interventionRequestMessage = ""
+                        } else {
+                            interventionRequestId = reqId
+                            interventionRequestType = reqType
+                            interventionRequestMessage = reqMsg
+                        }
+                        applyInterventionUiState()
+                    }
+
+                    if (hasText) {
+                        updateText(text)
+                    }
                 }
             }
             ACTION_SET_IDLE -> {
@@ -1693,6 +1762,12 @@ class FloatingStatusService : Service() {
             windowManager = null
         }
 
+        try {
+            imeFocusDeadlockController?.stop()
+        } catch (_: Exception) {
+        }
+        imeFocusDeadlockController = null
+
         stopRecordingInternal(cancel = true)
 
         try {
@@ -1711,6 +1786,53 @@ class FloatingStatusService : Service() {
         } catch (_: Exception) {
         }
         super.onDestroy()
+    }
+
+    private fun applyFocusDeadlockUiState(locked: Boolean, displayId: Int) {
+        focusDeadlockLocked = locked
+
+        val blocker = focusDeadlockBlockerView
+        if (blocker != null) {
+            blocker.visibility = if (locked) View.VISIBLE else View.GONE
+            blocker.isEnabled = locked
+            blocker.isClickable = locked
+        }
+
+        val tip = focusDeadlockTipView
+        if (tip != null) {
+            focusDeadlockTipAutoHideRunnable?.let { mainHandler.removeCallbacks(it) }
+            focusDeadlockTipAutoHideRunnable = null
+
+            if (locked) {
+                tip.text = "焦点锁定中：虚拟屏幕正在使用输入法"
+                tip.visibility = View.VISIBLE
+            } else {
+                tip.text = "焦点锁定已解除"
+                tip.visibility = View.VISIBLE
+                val r = Runnable {
+                    focusDeadlockTipView?.visibility = View.GONE
+                }
+                focusDeadlockTipAutoHideRunnable = r
+                mainHandler.postDelayed(r, 1200L)
+            }
+        }
+
+        val toMain = toolboxToMainButtonView
+        if (toMain != null) {
+            toMain.isEnabled = !locked
+            toMain.alpha = if (locked) 0.45f else 1f
+        }
+
+        if (locked && displayId > 0) {
+            runCatching {
+                val lp = focusDeadlockTipLayoutParams
+                val wm = windowManager
+                val v = focusDeadlockTipView
+                if (lp != null && wm != null && v != null && v.parent != null) {
+                    wm.updateViewLayout(v, lp)
+                }
+            }
+        }
     }
 
     private fun ensureViewCreatedIfNeeded() {
@@ -2077,9 +2199,6 @@ class FloatingStatusService : Service() {
 
                 val cost = android.os.SystemClock.uptimeMillis() - t0
                 val lagged = cost >= 16L
-                if (lagged) {
-                    logTouchLayerOnce("touch-lag: cost=${cost}ms action=$action seq=$seq", force = false)
-                }
                 updateTouchLayerPerfSuffix(action, seq, cost, lagged)
                 true
             }
@@ -2150,6 +2269,10 @@ class FloatingStatusService : Service() {
             android.R.drawable.ic_menu_view,
             "切换到主屏幕"
         ) {
+            if (focusDeadlockLocked) {
+                applyFocusDeadlockUiState(true, VirtualDisplayController.getDisplayId() ?: 0)
+                return@makeLabeledToolButton
+            }
             // Make expand animation feel immediate before heavy operations.
             if (!toolboxExpanded) {
                 setToolboxExpanded(true, animate = true)
@@ -2172,6 +2295,31 @@ class FloatingStatusService : Service() {
             if (!ShizukuBridge.pingBinder() || !ShizukuBridge.hasPermission()) return@makeLabeledToolButton
             workerScope.launch {
                 runCatching {
+                    val top = getTopComponentOnDisplayBestEffort(did).trim()
+                    val welcomeComponent = "$packageName/.WelcomeActivity"
+
+                    if (top == welcomeComponent) {
+                        return@runCatching
+                    }
+
+                    if (top.isBlank()) {
+                        VirtualDisplayController.showWelcomeOnActiveDisplayBestEffort(this@FloatingStatusService)
+                        return@runCatching
+                    }
+
+                    val pkg = extractPackageFromComponent(top)
+                    if (pkg.isBlank()) {
+                        VirtualDisplayController.showWelcomeOnActiveDisplayBestEffort(this@FloatingStatusService)
+                        return@runCatching
+                    }
+
+                    if (pkg != packageName) {
+                        VirtualDisplayController.ensureFocusedDisplayBestEffort()
+                        virtualAsyncInputInjector.injectKeyEventAsync(did, KeyEvent.KEYCODE_BACK, KeyEvent.ACTION_DOWN)
+                        virtualAsyncInputInjector.injectKeyEventAsync(did, KeyEvent.KEYCODE_BACK, KeyEvent.ACTION_UP)
+                        return@runCatching
+                    }
+
                     VirtualDisplayController.ensureFocusedDisplayBestEffort()
                     virtualAsyncInputInjector.injectKeyEventAsync(did, KeyEvent.KEYCODE_BACK, KeyEvent.ACTION_DOWN)
                     virtualAsyncInputInjector.injectKeyEventAsync(did, KeyEvent.KEYCODE_BACK, KeyEvent.ACTION_UP)
@@ -2186,9 +2334,33 @@ class FloatingStatusService : Service() {
             setToolboxExpanded(false, animate = true)
         }
 
+        val btnInterventionOk = makeLabeledToolButton(
+            android.R.drawable.ic_menu_send,
+            "同意/完成"
+        ) {
+            val id = interventionRequestId
+            if (id <= 0L) return@makeLabeledToolButton
+            UserInterventionGate.respond(id, true)
+        }.apply {
+            visibility = View.GONE
+        }
+
+        val btnInterventionNo = makeLabeledToolButton(
+            android.R.drawable.ic_menu_close_clear_cancel,
+            "拒绝"
+        ) {
+            val id = interventionRequestId
+            if (id <= 0L) return@makeLabeledToolButton
+            UserInterventionGate.respond(id, false)
+        }.apply {
+            visibility = View.GONE
+        }
+
         row.addView(btnToApp)
         row.addView(btnToMain)
         row.addView(btnVirtualBack)
+        row.addView(btnInterventionOk)
+        row.addView(btnInterventionNo)
         row.addView(btnClose)
 
         panelContent.addView(previewWrap)
@@ -2204,6 +2376,8 @@ class FloatingStatusService : Service() {
         toolboxModeTextView = modeText
         toolboxCloseButtonView = btnClose
         toolboxToMainButtonView = btnToMain
+        toolboxInterventionButtonView = btnInterventionOk
+        toolboxInterventionRejectButtonView = btnInterventionNo
 
         toolboxHandleView = container
 
@@ -2326,6 +2500,81 @@ class FloatingStatusService : Service() {
             false
         }
 
+        val blockerParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.START or Gravity.TOP
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_UNCHANGED
+            if (Build.VERSION.SDK_INT >= 28) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+
+        val blockerView = View(context).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            isClickable = false
+            isFocusable = false
+            isFocusableInTouchMode = false
+            visibility = View.GONE
+
+            var lastLogAt = 0L
+            setOnTouchListener { _, ev ->
+                if (!focusDeadlockLocked) return@setOnTouchListener false
+                val now = android.os.SystemClock.uptimeMillis()
+                if (now - lastLogAt >= 250L) {
+                    lastLogAt = now
+                    val rx = try { ev.rawX } catch (_: Exception) { -1f }
+                    val ry = try { ev.rawY } catch (_: Exception) { -1f }
+                    Log.i(TAG, "focus-deadlock touch: a=${ev.actionMasked} raw=${rx},${ry}")
+                }
+                true
+            }
+        }
+
+        val tipView = TextView(context).apply {
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            text = ""
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#B3000000"))
+                cornerRadius = dp(14).toFloat()
+            }
+            visibility = View.GONE
+            isClickable = false
+            isFocusable = false
+            isFocusableInTouchMode = false
+        }
+
+        val tipParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            y = dp(30)
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_UNCHANGED
+            if (Build.VERSION.SDK_INT >= 28) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+
+        focusDeadlockBlockerView = blockerView
+        focusDeadlockBlockerLayoutParams = blockerParams
+        focusDeadlockTipView = tipView
+        focusDeadlockTipLayoutParams = tipParams
+
         val barParams = WindowManager.LayoutParams(
             handleWidthPx(),
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -2363,8 +2612,10 @@ class FloatingStatusService : Service() {
         toolboxLayoutParams = toolboxParams
         toolboxPanelView = panel
 
+        windowManager?.addView(blockerView, blockerParams)
         windowManager?.addView(panel, toolboxParams)
         windowManager?.addView(root, barParams)
+        windowManager?.addView(tipView, tipParams)
 
         root.translationX = if (dockOnRight) barWidth.toFloat() else (-barWidth).toFloat()
 
@@ -2383,6 +2634,32 @@ class FloatingStatusService : Service() {
         diag("ensureViewCreated")
 
         updateText("等待指令")
+
+        applyFocusDeadlockUiState(focusDeadlockLocked, VirtualDisplayController.getDisplayId() ?: 0)
+
+        // 确保 UI 能响应当前 pending 的接管/确认请求。
+        applyInterventionUiState()
+    }
+
+    private fun applyInterventionUiState() {
+        val okBtn = toolboxInterventionButtonView
+        val noBtn = toolboxInterventionRejectButtonView
+        if (okBtn == null || noBtn == null) return
+
+        val id = interventionRequestId
+        val type = interventionRequestType
+        val hasPending = id > 0L
+
+        if (!hasPending) {
+            okBtn.visibility = View.GONE
+            noBtn.visibility = View.GONE
+            return
+        }
+
+        // TAKEOVER：只显示“完成”按钮；CONFIRMATION：显示“同意/拒绝”。
+        val isTakeover = type.equals("TAKEOVER", ignoreCase = true)
+        okBtn.visibility = View.VISIBLE
+        noBtn.visibility = if (isTakeover) View.GONE else View.VISIBLE
     }
 
     private fun applyLayoutParamsIfPossible() {
@@ -2470,6 +2747,17 @@ class FloatingStatusService : Service() {
 
     private fun removeViewIfNeeded() {
         val wm = windowManager ?: return
+
+        try {
+            focusDeadlockTipView?.let { wm.removeView(it) }
+        } catch (_: Exception) {
+        }
+
+        try {
+            focusDeadlockBlockerView?.let { wm.removeView(it) }
+        } catch (_: Exception) {
+        }
+
         try {
             barView?.let { wm.removeView(it) }
         } catch (_: Exception) {
@@ -2503,6 +2791,15 @@ class FloatingStatusService : Service() {
         toolboxLayoutParams = null
         tempFocusableEnabled = false
         isShowing = false
+
+        focusDeadlockTipAutoHideRunnable?.let { mainHandler.removeCallbacks(it) }
+        focusDeadlockTipAutoHideRunnable = null
+
+        focusDeadlockBlockerView = null
+        focusDeadlockBlockerLayoutParams = null
+        focusDeadlockTipView = null
+        focusDeadlockTipLayoutParams = null
+        focusDeadlockLocked = false
     }
 
     private fun showSummaryBubbleInternal(message: String) {
@@ -3658,6 +3955,10 @@ class FloatingStatusService : Service() {
 
         const val EXTRA_TASK_TEXT = "extra_task_text"
 
+        private const val EXTRA_INTERVENTION_REQUEST_ID = "extra_intervention_request_id"
+        private const val EXTRA_INTERVENTION_REQUEST_TYPE = "extra_intervention_request_type"
+        private const val EXTRA_INTERVENTION_REQUEST_MESSAGE = "extra_intervention_request_message"
+
         fun canDrawOverlays(context: Context): Boolean {
             return Settings.canDrawOverlays(context)
         }
@@ -3724,6 +4025,36 @@ class FloatingStatusService : Service() {
             val intent = Intent(context, FloatingStatusService::class.java).apply {
                 action = ACTION_SHOW_SUMMARY
                 putExtra(EXTRA_SUMMARY_TEXT, message)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ContextCompat.startForegroundService(context, intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun setInterventionState(context: Context, requestId: Long, type: String, message: String) {
+            if (!Settings.canDrawOverlays(context)) return
+            val intent = Intent(context, FloatingStatusService::class.java).apply {
+                action = ACTION_UPDATE
+                putExtra(EXTRA_INTERVENTION_REQUEST_ID, requestId)
+                putExtra(EXTRA_INTERVENTION_REQUEST_TYPE, type)
+                putExtra(EXTRA_INTERVENTION_REQUEST_MESSAGE, message)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ContextCompat.startForegroundService(context, intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun clearInterventionState(context: Context, requestId: Long) {
+            if (!Settings.canDrawOverlays(context)) return
+            val intent = Intent(context, FloatingStatusService::class.java).apply {
+                action = ACTION_UPDATE
+                putExtra(EXTRA_INTERVENTION_REQUEST_ID, requestId)
+                putExtra(EXTRA_INTERVENTION_REQUEST_TYPE, "")
+                putExtra(EXTRA_INTERVENTION_REQUEST_MESSAGE, "")
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 ContextCompat.startForegroundService(context, intent)

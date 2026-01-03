@@ -244,11 +244,22 @@ def launch_app(
     if delay is None:
         delay = TIMING_CONFIG.device.default_launch_delay
 
-    if app_name not in APP_PACKAGES:
-        return False
-
     cmd_prefix = adb_prefix(device_id)
-    package = APP_PACKAGES[app_name]
+    try:
+        from phone_agent.app_package_resolver import resolve_package, is_package_installed
+
+        package = resolve_package(app_name, device_id=device_id)
+        if not package:
+            return False
+        try:
+            if not is_package_installed(package, device_id=device_id):
+                return False
+        except Exception:
+            pass
+    except Exception:
+        if app_name not in APP_PACKAGES:
+            return False
+        package = APP_PACKAGES[app_name]
 
     display_id = get_display_id()
 

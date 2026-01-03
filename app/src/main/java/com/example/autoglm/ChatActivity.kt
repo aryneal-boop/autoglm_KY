@@ -113,6 +113,13 @@ class ChatActivity : ComponentActivity() {
     private var inputText = mutableStateOf("")
     private var sendEnabled = mutableStateOf(false)
 
+    private var interventionVisible = mutableStateOf(false)
+    private var interventionRequestId = mutableStateOf(0L)
+    private var interventionRequestType = mutableStateOf("")
+    private var interventionRequestMessage = mutableStateOf("")
+
+    private var interventionReceiver: BroadcastReceiver? = null
+
     private lateinit var adapter: ChatAdapter
     private lateinit var rootContainer: View
 
@@ -161,6 +168,63 @@ class ChatActivity : ComponentActivity() {
 
         if (anyUpdated) {
             forceScrollToBottom(smooth = true)
+        }
+    }
+
+    private fun hideInterventionUiLocalIfMatching(requestId: Long) {
+        runOnUiThread {
+            if (requestId <= 0L) return@runOnUiThread
+            if (interventionRequestId.value != requestId) return@runOnUiThread
+            interventionVisible.value = false
+            interventionRequestId.value = 0L
+            interventionRequestType.value = ""
+            interventionRequestMessage.value = ""
+            sendEnabled.value = inputText.value.isNotBlank()
+            setupComposeInputBar()
+        }
+    }
+
+    private fun syncPendingInterventionFromGate() {
+        val id = try {
+            UserInterventionGate.getPendingRequestId()
+        } catch (_: Exception) {
+            0L
+        }
+        val type = try {
+            UserInterventionGate.getPendingRequestType().orEmpty().trim()
+        } catch (_: Exception) {
+            ""
+        }
+        val msg = try {
+            UserInterventionGate.getPendingRequestMessage().orEmpty().trim()
+        } catch (_: Exception) {
+            ""
+        }
+
+        runOnUiThread {
+            if (id > 0L) {
+                val changed = interventionRequestId.value != id ||
+                    interventionRequestType.value != type ||
+                    interventionRequestMessage.value != msg ||
+                    !interventionVisible.value
+                interventionRequestId.value = id
+                interventionRequestType.value = type
+                interventionRequestMessage.value = msg
+                interventionVisible.value = true
+                sendEnabled.value = false
+                if (changed) {
+                    setupComposeInputBar()
+                }
+            } else {
+                if (interventionVisible.value || interventionRequestId.value != 0L) {
+                    interventionVisible.value = false
+                    interventionRequestId.value = 0L
+                    interventionRequestType.value = ""
+                    interventionRequestMessage.value = ""
+                    sendEnabled.value = inputText.value.isNotBlank()
+                    setupComposeInputBar()
+                }
+            }
         }
     }
 
@@ -772,9 +836,121 @@ class ChatActivity : ComponentActivity() {
             registerReceiver(stopReceiver, filter)
         }
 
+        interventionReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                when (intent?.action) {
+                    UserInterventionGate.ACTION_INTERVENTION_REQUEST -> {
+                        val id = try {
+                            intent.getLongExtra(UserInterventionGate.EXTRA_REQUEST_ID, 0L)
+                        } catch (_: Exception) {
+                            0L
+                        }
+                        val type = try {
+                            intent.getStringExtra(UserInterventionGate.EXTRA_REQUEST_TYPE).orEmpty().trim()
+                        } catch (_: Exception) {
+                            ""
+                        }
+                        val msg = try {
+                            intent.getStringExtra(UserInterventionGate.EXTRA_REQUEST_MESSAGE).orEmpty().trim()
+                        } catch (_: Exception) {
+                            ""
+                        }
+                        if (id > 0L) {
+                            runOnUiThread {
+                                interventionRequestId.value = id
+                                interventionRequestType.value = type
+                                interventionRequestMessage.value = msg
+                                interventionVisible.value = true
+                                // 提示期间禁止发送普通指令，避免误触继续执行。
+                                sendEnabled.value = false
+                                setupComposeInputBar()
+                            }
+                        }
+                    }
+
+                    UserInterventionGate.ACTION_INTERVENTION_CLEAR -> {
+                        val id = try {
+                            intent.getLongExtra(UserInterventionGate.EXTRA_REQUEST_ID, 0L)
+                        } catch (_: Exception) {
+                            0L
+                        }
+                        runOnUiThread {
+                            if (id <= 0L || interventionRequestId.value == id) {
+                                interventionVisible.value = false
+                                interventionRequestId.value = 0L
+                                interventionRequestType.value = ""
+                                interventionRequestMessage.value = ""
+                                sendEnabled.value = inputText.value.isNotBlank()
+                                setupComposeInputBar()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        val iFilter = IntentFilter().apply {
+            addAction(UserInterventionGate.ACTION_INTERVENTION_REQUEST)
+            addAction(UserInterventionGate.ACTION_INTERVENTION_CLEAR)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(interventionReceiver, iFilter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(interventionReceiver, iFilter)
+        }
+
+        // 兜底：如果 ChatActivity 启动/恢复时错过了广播（例如请求发生在其它 app 前台），
+        // 这里主动同步一次 pending 状态，确保聊天界面也能看到按钮。
+        syncPendingInterventionFromGate()
+
         lifecycleScope.launch {
             ChatEventBus.events.collect { ev ->
                 when (ev) {
+                    is ChatEventBus.Event.InterventionRequest -> {
+                        val id = try {
+                            ev.requestId
+                        } catch (_: Exception) {
+                            0L
+                        }
+                        val type = try {
+                            ev.requestType
+                        } catch (_: Exception) {
+                            ""
+                        }
+                        val msg = try {
+                            ev.message
+                        } catch (_: Exception) {
+                            ""
+                        }
+                        if (id > 0L) {
+                            runOnUiThread {
+                                interventionRequestId.value = id
+                                interventionRequestType.value = type
+                                interventionRequestMessage.value = msg
+                                interventionVisible.value = true
+                                sendEnabled.value = false
+                                setupComposeInputBar()
+                            }
+                        }
+                    }
+
+                    is ChatEventBus.Event.InterventionClear -> {
+                        val id = try {
+                            ev.requestId
+                        } catch (_: Exception) {
+                            0L
+                        }
+                        runOnUiThread {
+                            if (id <= 0L || interventionRequestId.value == id) {
+                                interventionVisible.value = false
+                                interventionRequestId.value = 0L
+                                interventionRequestType.value = ""
+                                interventionRequestMessage.value = ""
+                                sendEnabled.value = inputText.value.isNotBlank()
+                                setupComposeInputBar()
+                            }
+                        }
+                    }
+
                     is ChatEventBus.Event.StartTaskFromSpeech -> {
                         val text = ev.recognizedText.trim()
                         val onlyHash = text.isNotEmpty() && text.all { it == '#' }
@@ -845,6 +1021,7 @@ class ChatActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         updateAdbStatus()
+        syncPendingInterventionFromGate()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -870,6 +1047,12 @@ class ChatActivity : ComponentActivity() {
         } catch (_: Exception) {
         }
         stopReceiver = null
+
+        try {
+            interventionReceiver?.let { unregisterReceiver(it) }
+        } catch (_: Exception) {
+        }
+        interventionReceiver = null
 
         stopRecordingInternal(cancel = true)
         super.onDestroy()
@@ -1191,118 +1374,195 @@ class ChatActivity : ComponentActivity() {
     /** 设置 Compose 输入栏：发光边框按钮 + 输入框 */
     private fun setupComposeInputBar() {
         composeInputBar.setContent {
-            var localText by remember { inputText }
+            var localText by inputText
             var localVoiceMode by remember { mutableStateOf(isVoiceMode) }
 
-            // 同步外部状态
+            val iv by interventionVisible
+            val reqId by interventionRequestId
+            val reqType by interventionRequestType
+            val reqMsg by interventionRequestMessage
+
             localVoiceMode = isVoiceMode
 
-            Row(
+            androidx.compose.foundation.layout.Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                // 切换按钮：语音/键盘
-                GlowButton(
-                    modifier = Modifier.height(44.dp),
-                    cornerRadius = 10.dp,
-                    durationBase = 4400,
-                    onClick = { setVoiceMode(!localVoiceMode) }
-                ) {
-                    Text(
-                        text = if (localVoiceMode) "键盘" else "语音",
-                        color = NeonColors.neonCyan,
-                        fontSize = 13.sp,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                }
-
-                if (localVoiceMode) {
-                    // 语音模式：按住说话按钮
-                    GlowButton(
+                if (iv && reqId > 0L) {
+                    val isTakeover = reqType.equals("TAKEOVER", ignoreCase = true)
+                    Box(
                         modifier = Modifier
-                            .weight(1f)
-                            .height(44.dp)
-                            .pointerInteropFilter { event ->
-                                when (event.actionMasked) {
-                                    MotionEvent.ACTION_DOWN -> {
-                                        startHoldToTalkFromUi()
-                                        true
-                                    }
-
-                                    MotionEvent.ACTION_UP,
-                                    MotionEvent.ACTION_CANCEL -> {
-                                        stopHoldToTalkFromUi()
-                                        true
-                                    }
-
-                                    else -> false
-                                }
-                            },
-                        cornerRadius = 10.dp,
-                        durationBase = 4400,
-                        onClick = { /* 触摸事件在外部处理 */ }
+                            .fillMaxWidth()
+                            .background(color = NeonColors.bgDark.copy(alpha = 0.35f))
+                            .padding(horizontal = 12.dp, vertical = 10.dp)
                     ) {
-                        Text(
-                            text = "按住 说话",
-                            color = NeonColors.neonCyan,
-                            fontSize = 14.sp,
-                            fontFamily = FontFamily.Monospace,
-                        )
-                    }
-                } else {
-                    // 键盘模式：输入框 + 发送按钮
-                    GlowButton(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(44.dp),
-                        cornerRadius = 10.dp,
-                        durationBase = 5500,
-                        onClick = { /* 输入框不响应点击 */ }
-                    ) {
-                        BasicTextField(
-                            value = localText,
-                            onValueChange = {
-                                localText = it
-                                inputText.value = it
-                                sendEnabled.value = it.isNotBlank()
-                            },
+                        androidx.compose.foundation.layout.Column(
                             modifier = Modifier.fillMaxWidth(),
-                            textStyle = TextStyle(
-                                color = NeonColors.textPrimary,
-                                fontSize = 14.sp,
-                            ),
-                            cursorBrush = SolidColor(NeonColors.neonCyan),
-                            singleLine = false,
-                            maxLines = 3,
-                            decorationBox = { innerTextField ->
-                                if (localText.isEmpty()) {
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = if (isTakeover) "需要人工接管" else "需要敏感操作确认",
+                                color = NeonColors.neonCyan,
+                                fontSize = 13.sp,
+                                fontFamily = FontFamily.Monospace,
+                            )
+                            if (reqMsg.isNotEmpty()) {
+                                Text(
+                                    text = reqMsg,
+                                    color = NeonColors.textPrimary,
+                                    fontSize = 13.sp,
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                GlowButton(
+                                    modifier = Modifier.height(40.dp),
+                                    cornerRadius = 10.dp,
+                                    durationBase = 4400,
+                                    onClick = {
+                                        val id = reqId
+                                        hideInterventionUiLocalIfMatching(id)
+                                        UserInterventionGate.respond(id, true)
+                                    }
+                                ) {
                                     Text(
-                                        text = "输入你的指令...",
-                                        color = NeonColors.textHint,
-                                        fontSize = 14.sp,
+                                        text = if (isTakeover) "已完成" else "同意",
+                                        color = NeonColors.neonCyan,
+                                        fontSize = 13.sp,
+                                        fontFamily = FontFamily.Monospace,
                                     )
                                 }
-                                innerTextField()
+                                if (!isTakeover) {
+                                    GlowButton(
+                                        modifier = Modifier.height(40.dp),
+                                        cornerRadius = 10.dp,
+                                        durationBase = 4400,
+                                        onClick = {
+                                            val id = reqId
+                                            hideInterventionUiLocalIfMatching(id)
+                                            UserInterventionGate.respond(id, false)
+                                        }
+                                    ) {
+                                        Text(
+                                            text = "拒绝",
+                                            color = NeonColors.neonCyan,
+                                            fontSize = 13.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                        )
+                                    }
+                                }
                             }
-                        )
+                        }
                     }
+                }
 
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     GlowButton(
                         modifier = Modifier.height(44.dp),
                         cornerRadius = 10.dp,
                         durationBase = 4400,
-                        enabled = sendEnabled.value,
-                        onClick = { handleSendClick() }
+                        onClick = { setVoiceMode(!localVoiceMode) }
                     ) {
                         Text(
-                            text = "发送",
-                            color = if (sendEnabled.value) NeonColors.neonCyan else NeonColors.textHint,
+                            text = if (localVoiceMode) "键盘" else "语音",
+                            color = NeonColors.neonCyan,
                             fontSize = 13.sp,
                             fontFamily = FontFamily.Monospace,
                         )
+                    }
+
+                    if (localVoiceMode) {
+                        GlowButton(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(44.dp)
+                                .pointerInteropFilter { event ->
+                                    when (event.actionMasked) {
+                                        MotionEvent.ACTION_DOWN -> {
+                                            startHoldToTalkFromUi()
+                                            true
+                                        }
+
+                                        MotionEvent.ACTION_UP,
+                                        MotionEvent.ACTION_CANCEL -> {
+                                            stopHoldToTalkFromUi()
+                                            true
+                                        }
+
+                                        else -> false
+                                    }
+                                },
+                            cornerRadius = 10.dp,
+                            durationBase = 4400,
+                            onClick = { }
+                        ) {
+                            Text(
+                                text = "按住 说话",
+                                color = NeonColors.neonCyan,
+                                fontSize = 14.sp,
+                                fontFamily = FontFamily.Monospace,
+                            )
+                        }
+                    } else {
+                        GlowButton(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(44.dp),
+                            cornerRadius = 10.dp,
+                            durationBase = 5500,
+                            onClick = { }
+                        ) {
+                            BasicTextField(
+                                value = localText,
+                                onValueChange = {
+                                    localText = it
+                                    inputText.value = it
+                                    sendEnabled.value = it.isNotBlank()
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                textStyle = TextStyle(
+                                    color = NeonColors.textPrimary,
+                                    fontSize = 14.sp,
+                                ),
+                                cursorBrush = SolidColor(NeonColors.neonCyan),
+                                singleLine = false,
+                                maxLines = 3,
+                                decorationBox = { innerTextField ->
+                                    if (localText.isEmpty()) {
+                                        Text(
+                                            text = "输入你的指令...",
+                                            color = NeonColors.textHint,
+                                            fontSize = 14.sp,
+                                        )
+                                    }
+                                    innerTextField()
+                                }
+                            )
+                        }
+
+                        GlowButton(
+                            modifier = Modifier.height(44.dp),
+                            cornerRadius = 10.dp,
+                            durationBase = 4400,
+                            enabled = sendEnabled.value && !interventionVisible.value,
+                            onClick = { handleSendClick() }
+                        ) {
+                            Text(
+                                text = "发送",
+                                color = if (sendEnabled.value) NeonColors.neonCyan else NeonColors.textHint,
+                                fontSize = 13.sp,
+                                fontFamily = FontFamily.Monospace,
+                            )
+                        }
                     }
                 }
             }

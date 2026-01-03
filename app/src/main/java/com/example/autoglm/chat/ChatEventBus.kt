@@ -8,6 +8,16 @@ object ChatEventBus {
     sealed class Event {
         data class StartTaskFromSpeech(val recognizedText: String) : Event()
 
+        data class InterventionRequest(
+            val requestId: Long,
+            val requestType: String,
+            val message: String,
+        ) : Event()
+
+        data class InterventionClear(
+            val requestId: Long,
+        ) : Event()
+
         data class AppendText(val role: MessageRole, val kind: String?, val text: String) : Event()
 
         data class AppendToLastText(val role: MessageRole, val kind: String?, val text: String) : Event()
@@ -23,6 +33,16 @@ object ChatEventBus {
 
     fun post(event: Event) {
         _events.tryEmit(event)
+    }
+
+    fun postInterventionRequest(requestId: Long, requestType: String, message: String) {
+        if (requestId <= 0L) return
+        post(Event.InterventionRequest(requestId, requestType, message))
+    }
+
+    fun postInterventionClear(requestId: Long) {
+        if (requestId <= 0L) return
+        post(Event.InterventionClear(requestId))
     }
 
     fun postText(role: MessageRole, text: String, kind: String? = null) {

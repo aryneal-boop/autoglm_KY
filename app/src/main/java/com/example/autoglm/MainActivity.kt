@@ -1049,6 +1049,10 @@ private fun ForceLoadingScreen(
     )
 
     LaunchedEffect(Unit) {
+        try {
+            AppPackageResolver.prewarmThirdPartyPackagesAsync()
+        } catch (_: Exception) {
+        }
         val steps = listOf(12, 47, 78, 100)
         val stepDelay = 650L
         for (p in steps) {

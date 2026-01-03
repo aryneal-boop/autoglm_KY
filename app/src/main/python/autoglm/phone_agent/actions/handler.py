@@ -126,7 +126,14 @@ class ActionHandler:
         success = device_factory.launch_app(app_name, self.device_id)
         if success:
             return ActionResult(True, False)
-        return ActionResult(False, False, f"App not found: {app_name}")
+
+        # 启动失败：结束当前任务并提示用户重新输入。
+        # 这里不要强制 stop/interrupt Python 线程，否则会导致回调来不及把提示输出到聊天界面。
+        return ActionResult(
+            success=False,
+            should_finish=True,
+            message="启动的app不存在，请重新输入指令",
+        )
 
     def _handle_tap(self, action: dict, width: int, height: int) -> ActionResult:
         """Handle tap action."""

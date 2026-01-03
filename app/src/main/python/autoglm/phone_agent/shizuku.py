@@ -43,9 +43,23 @@ def _resolve_package(app_or_pkg: str) -> str:
     q = (app_or_pkg or "").strip()
     if not q:
         return ""
-    if "." in q:
-        return q
-    return APP_PACKAGES.get(q, "")
+    try:
+        from phone_agent.app_package_resolver import resolve_package, is_package_installed
+
+        pkg = resolve_package(q)
+        if not pkg:
+            return ""
+        # 仅在能拿到包列表时校验，避免无权限/异常时误判。
+        try:
+            if is_package_installed(pkg):
+                return pkg
+        except Exception:
+            return pkg
+        return ""
+    except Exception:
+        if "." in q:
+            return q
+        return APP_PACKAGES.get(q, "")
 
 
 def _is_virtual_isolated_mode() -> bool:
@@ -87,6 +101,35 @@ def _ensure_virtual_display_started() -> int | None:
     except Exception:
         pass
     return _get_virtual_display_id()
+
+
+def _ensure_virtual_display_focused_best_effort(display_id: int | None) -> None:
+    did = int(display_id) if display_id is not None else 0
+    if did <= 0:
+        return
+    if not _is_virtual_isolated_mode():
+        return
+    try:
+        from java import jclass
+
+        Vdc = jclass("com.example.autoglm.VirtualDisplayController")
+        try:
+            Vdc.ensureFocusedDisplayBestEffort()
+            return
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    try:
+        _exec_text(f"cmd input set-focused-display {int(did)}")
+        return
+    except Exception:
+        pass
+    try:
+        _exec_text(f"wm set-focused-display {int(did)}")
+    except Exception:
+        pass
 
 
 def _find_task_id_for_package_from_dumpsys(text: str, package_name: str) -> int | None:
@@ -309,6 +352,7 @@ def _fallback_screenshot(is_sensitive: bool) -> Screenshot:
 def tap(x: int, y: int, device_id=None, delay: float | None = None) -> None:
     _ = device_id
     did = _ensure_virtual_display_started()
+    _ensure_virtual_display_focused_best_effort(did)
     if did is not None:
         try:
             from java import jclass
@@ -326,6 +370,7 @@ def swipe(start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int |
     _ = device_id
     dur = int(duration_ms) if duration_ms is not None else 600
     did = _ensure_virtual_display_started()
+    _ensure_virtual_display_focused_best_effort(did)
     if did is not None:
         try:
             from java import jclass
@@ -344,6 +389,7 @@ def swipe(start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int |
 def back(device_id=None, delay: float | None = None) -> None:
     _ = device_id
     did = _ensure_virtual_display_started()
+    _ensure_virtual_display_focused_best_effort(did)
     if did is not None:
         try:
             from java import jclass
@@ -360,6 +406,7 @@ def back(device_id=None, delay: float | None = None) -> None:
 def home(device_id=None, delay: float | None = None) -> None:
     _ = device_id
     did = _ensure_virtual_display_started()
+    _ensure_virtual_display_focused_best_effort(did)
     if did is not None:
         try:
             from java import jclass
@@ -375,6 +422,8 @@ def home(device_id=None, delay: float | None = None) -> None:
 
 def type_text(text: str, device_id=None) -> None:
     _ = device_id
+    did = _ensure_virtual_display_started()
+    _ensure_virtual_display_focused_best_effort(did)
     payload = base64.b64encode((text or "").encode("utf-8")).decode("utf-8")
     out = _exec_text(f"am broadcast -a ADB_INPUT_B64 --es msg {payload}")
     if "Broadcast completed" in out:
@@ -388,6 +437,8 @@ def type_text(text: str, device_id=None) -> None:
 
 def clear_text(device_id=None) -> None:
     _ = device_id
+    did = _ensure_virtual_display_started()
+    _ensure_virtual_display_focused_best_effort(did)
     out = _exec_text("am broadcast -a ADB_CLEAR_TEXT")
     if "Broadcast completed" in out:
         return
@@ -396,6 +447,8 @@ def clear_text(device_id=None) -> None:
 
 def detect_and_set_adb_keyboard(device_id=None) -> str:
     _ = device_id
+    did = _ensure_virtual_display_started()
+    _ensure_virtual_display_focused_best_effort(did)
     current_ime = _exec_text("settings get secure default_input_method").strip()
     if "com.android.adbkeyboard/.AdbIME" not in current_ime:
         _exec_text("ime set com.android.adbkeyboard/.AdbIME")
@@ -405,6 +458,8 @@ def detect_and_set_adb_keyboard(device_id=None) -> str:
 
 def restore_keyboard(ime: str, device_id=None) -> None:
     _ = device_id
+    did = _ensure_virtual_display_started()
+    _ensure_virtual_display_focused_best_effort(did)
     target = (ime or "").strip()
     if not target:
         return
