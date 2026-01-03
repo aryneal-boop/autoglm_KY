@@ -160,9 +160,7 @@ class ChatActivity : ComponentActivity() {
         }
 
         if (anyUpdated) {
-            if (!DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST && isRunningTask && followBottom && !userDraggingMessages) {
-                rvMessages.smoothScrollToPosition(adapter.getItemCountSafe() - 1)
-            }
+            forceScrollToBottom(smooth = true)
         }
     }
 
@@ -176,14 +174,7 @@ class ChatActivity : ComponentActivity() {
             pendingUiAppends.clear()
 
             adapter.submitAppendBatch(batch)
-
-            if (!DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST && isRunningTask && followBottom && !userDraggingMessages) {
-                val now = SystemClock.uptimeMillis()
-                if (now - lastProgrammaticScrollAtUptime >= 120L) {
-                    lastProgrammaticScrollAtUptime = now
-                    rvMessages.scrollToPosition(adapter.getItemCountSafe() - 1)
-                }
-            }
+            forceScrollToBottom(smooth = false)
         }, 50L)
     }
 
@@ -194,6 +185,7 @@ class ChatActivity : ComponentActivity() {
             val batch = ArrayList(pendingUiAppends)
             pendingUiAppends.clear()
             adapter.submitAppendBatch(batch)
+            forceScrollToBottom(smooth = false)
         } catch (_: Exception) {
         }
     }
@@ -968,22 +960,56 @@ class ChatActivity : ComponentActivity() {
     }
 
     private fun scrollToBottom() {
+        forceScrollToBottom(smooth = false)
+    }
+
+    private fun forceScrollToBottom(smooth: Boolean) {
         if (DISABLE_PROGRAMMATIC_SCROLL_FOR_TEST) return
 
-        val last = adapter.getItemCountSafe() - 1
-        if (last < 0) return
+        // 需求：Python 任务执行期间的每次输出，都要把消息列表刷到最底部。
+        // 这里统一入口，并做轻量节流，避免高频流式输出导致卡顿。
+        followBottom = true
 
-        if (enableScrollDebug) {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastProgrammaticScrollAtUptime < 80L) return
+        lastProgrammaticScrollAtUptime = now
+
+        val doScroll = Runnable {
+            val last = adapter.getItemCountSafe() - 1
+            if (last < 0) return@Runnable
+
+            if (enableScrollDebug) {
+                try {
+                    val st = Throwable().stackTrace
+                        .drop(1)
+                        .take(6)
+                        .joinToString(" | ") { "${it.className.substringAfterLast('.')}#${it.methodName}:${it.lineNumber}" }
+                    Log.d(scrollDebugTag, "forceScrollToBottom -> pos=$last smooth=$smooth dragging=$userDraggingMessages t=${SystemClock.uptimeMillis()} stack=$st")
+                } catch (_: Exception) {
+                }
+            }
+
             try {
-                val st = Throwable().stackTrace
-                    .drop(1)
-                    .take(6)
-                    .joinToString(" | ") { "${it.className.substringAfterLast('.')}#${it.methodName}:${it.lineNumber}" }
-                Log.d(scrollDebugTag, "scrollToBottom -> scrollToPosition($last) followBottom=$followBottom dragging=$userDraggingMessages t=${SystemClock.uptimeMillis()} stack=$st")
+                if (smooth) {
+                    rvMessages.smoothScrollToPosition(last)
+                } else {
+                    rvMessages.scrollToPosition(last)
+                }
             } catch (_: Exception) {
             }
         }
-        rvMessages.post { rvMessages.scrollToPosition(last) }
+
+        // 用户正在拖动时不要强抢手势，等一小会儿再补一次到底部。
+        if (userDraggingMessages) {
+            mainHandler.postDelayed({
+                if (!userDraggingMessages) {
+                    rvMessages.post(doScroll)
+                }
+            }, 120L)
+            return
+        }
+
+        rvMessages.post(doScroll)
     }
 
     private fun isNearBottom(): Boolean {
