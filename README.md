@@ -34,8 +34,8 @@
 
 | 功能描述 | 演示图 (建议上传后替换链接) |
 | :--- | :--- |
-| **App 主界面** | ![Main UI](https://via.placeholder.com/200x400?text=App+Interface) |
-| **虚拟屏后台操作** | ![Virtual Screen](https://via.placeholder.com/200x400?text=Virtual+Screen+Demo) |
+| **App 主界面** | ![Main UI](https://github.com/aryneal-boop/autoglm_KY/blob/master/XC/D62B6A4EE631195C197C2290C944EA51.jpg?raw=true) |
+| **虚拟屏后台操作** | ![Virtual Screen](https://github.com/aryneal-boop/autoglm_KY/blob/master/XC/A663E962F9919F6543D16330F2323B7D.jpg?raw=true) |
 
 ---
 
