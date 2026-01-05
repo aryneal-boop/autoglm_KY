@@ -3,6 +3,24 @@ package com.example.autoglm.chat
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 
+/**
+ * 进程内事件总线（面向 `ChatActivity`）。
+ *
+ * **用途**
+ * - 使用 `SharedFlow` 在进程内分发 UI 事件：
+ *   - 追加文本/图片消息
+ *   - 语音识别结果触发任务
+ *   - 用户介入请求/清理（与 [com.example.autoglm.UserInterventionGate] 互相兜底）
+ * - 维护一份轻量 `messageBuffer`：用于合并流式输出、在 Activity 重建时尽量恢复上下文。
+ *
+ * **典型用法**
+ * - 发布：`ChatEventBus.postText(role, text, kind)` / `postInterventionRequest(...)`
+ * - 订阅：`ChatActivity` 通过 `lifecycleScope` collect [events]
+ *
+ * **使用注意事项**
+ * - `MutableSharedFlow` 使用 `tryEmit`：当下游消费不及时可能丢事件，上层应把关键状态同时落到 UI/通知等多通道。
+ * - `messageBuffer` 访问需同步：本类已使用 synchronized 做基本保护，但仍建议避免高并发写入。
+ */
 object ChatEventBus {
 
     sealed class Event {

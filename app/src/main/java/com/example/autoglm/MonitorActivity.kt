@@ -19,6 +19,22 @@ import androidx.recyclerview.widget.RecyclerView
 import com.example.autoglm.vdiso.ShizukuVirtualDisplaySurfaceStreamer
 import com.example.autoglm.vdiso.ShizukuVirtualDisplayEngine
  
+/**
+ * 虚拟屏监视/调试页面（Legacy/Debug UI）。
+ *
+ * **用途**
+ * - 通过 [VirtualDisplayController.ensureVirtualDisplayForMonitor] 尽力确保虚拟屏存在，并展示 displayId。
+ * - 使用 `vdiso.ShizukuVirtualDisplaySurfaceStreamer` 将 VirtualDisplay 的输出直接渲染到 `SurfaceView`，
+ *   用于调试虚拟屏是否正常工作。
+ * - 提供一个“可启动应用列表”，用于在指定 display 上启动目标 App（辅助调试 window/focus 行为）。
+ *
+ * **引用路径**
+ * - 当前未在 `AndroidManifest.xml` 默认暴露为入口，通常用于开发/排障时手动启动。
+ *
+ * **使用注意事项**
+ * - 该页面属于调试工具：依赖 Shizuku 权限与系统服务反射，失败时可能表现为黑屏/无输出。
+ * - 退出页面时务必停止 streamer，避免占用 Surface/GL 资源。
+ */
 class MonitorActivity : ComponentActivity() {
 
     private var uiHandler: Handler? = null

@@ -1,5 +1,22 @@
 package com.example.autoglm
 
+/**
+ * 任务流文本分类器（用于 UI 渲染与聚合）。
+ *
+ * **用途**
+ * - 将 Python 回调流（action/assistant）中的碎片化文本按规则分类为不同 kind：
+ *   - `STATUS` / `PLAN` / `OPERATION` / `STEP` / `METRIC` / `THINK` 等
+ * - 便于：
+ *   - `ChatActivity` 在聊天流中以不同样式渲染
+ *   - `FloatingStatusService`/`OverlayStatusTextMapper` 抽取更短状态文案
+ *
+ * **典型用法**
+ * - action 流：`TaskStreamClassifier.classifyAction(delta, lastKind)`
+ * - assistant 流：`TaskStreamClassifier.classifyAssistant(delta)`
+ *
+ * **引用路径（常见）**
+ * - `ChatActivity`：将回调输出分类后写入消息列表。
+ */
 object TaskStreamClassifier {
 
     data class Classified(

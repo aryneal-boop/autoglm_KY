@@ -4,6 +4,25 @@ import android.content.ComponentName
 import android.content.Context
 import android.provider.Settings
 
+/**
+ * 权限/系统开关检查工具（面向引导与自检）。
+ *
+ * **用途**
+ * - 汇总检查当前 App 在“助手常驻/悬浮窗交互”场景下的关键系统开关：
+ *   - 悬浮窗权限（SYSTEM_ALERT_WINDOW）
+ *   - 通知监听权限（Notification Listener Service）
+ *   - 电池优化白名单（device idle whitelist，避免后台被杀）
+ *
+ * **典型用法**
+ * - `val st = PermissionUtils.checkAll(context); if (!st.allGranted) ...`
+ *
+ * **引用路径（常见）**
+ * - `MainActivity`：引导/校准流程中展示权限状态与跳转入口。
+ * - `AdbPermissionGranter`：在 ADB/Shizuku 通道可用时尝试自动授予部分权限。
+ *
+ * **使用注意事项**
+ * - 电池白名单检测通过 `adb shell dumpsys deviceidle whitelist`：依赖 ADB 可用，失败会返回 false。
+ */
 internal object PermissionUtils {
 
     data class Status(

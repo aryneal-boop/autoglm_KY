@@ -19,6 +19,25 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
 import com.example.autoglm.ui.NeonLiquidBackground
 
+/**
+ * 设置页 Activity（XML + Compose 背景）。
+ *
+ * **用途**
+ * - 配置模型服务参数（baseUrl/apiKey/modelName），保存到 [ConfigManager]。
+ * - 配置执行环境：
+ *   - 主屏控制（[ConfigManager.EXEC_ENV_MAIN]）
+ *   - 虚拟隔离模式（[ConfigManager.EXEC_ENV_VIRTUAL]）
+ * - 配置虚拟屏参数：DPI、分辨率预设。
+ * - 当用户切回主屏模式时，会触发 [VirtualDisplayController.cleanupAsync] 尝试停止虚拟屏。
+ *
+ * **引用路径**
+ * - `app/src/main/AndroidManifest.xml` -> `<activity android:name=".SettingsActivity" ...>`
+ * - 通常由 `ChatActivity` 的设置按钮启动。
+ *
+ * **使用注意事项**
+ * - `apiKey` 属于敏感信息：由 [ConfigManager] 使用加密 SharedPreferences 保存。
+ * - 切换执行环境会影响截图/输入注入路径：建议提示用户在任务空闲时切换。
+ */
 class SettingsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

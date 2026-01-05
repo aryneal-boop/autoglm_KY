@@ -3,6 +3,24 @@ package com.example.autoglm
 import android.content.Context
 import android.util.Log
 
+/**
+ * 虚拟显示（overlay display）扫描与管理工具（基于本地 ADB）。
+ *
+ * **用途**
+ * - 通过 `adb shell dumpsys display` 解析当前设备上的 display 列表，识别是否存在“模拟辅助显示/overlay display”。
+ * - 该类更偏向“传统 overlay display”方案的兼容层；在当前项目中，主流程的虚拟隔离更推荐使用
+ *   `vdiso.ShizukuVirtualDisplayEngine`（由 [VirtualDisplayController] 统一封装）。
+ *
+ * **典型用法**
+ * - `VirtualDisplayManager(context, adbExecPath).xxx()`（具体能力以实现为准）
+ *
+ * **引用路径（常见）**
+ * - 早期/兼容路径：用于判断开发者选项“模拟辅助显示”是否已启用。
+ *
+ * **使用注意事项**
+ * - `dumpsys display` 输出在不同 Android 版本/ROM 可能差异较大：这里采用多正则兜底匹配。
+ * - 依赖 ADB 可用：未配对/连接时读取会失败。
+ */
 class VirtualDisplayManager(
     private val context: Context,
     private val adbExecPath: String,

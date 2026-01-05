@@ -6,6 +6,21 @@ import android.content.Context
 import android.view.View
 import android.view.inputmethod.InputMethodManager
 
+/**
+ * 虚拟屏欢迎/兜底 Activity。
+ *
+ * **用途**
+ * - 在虚拟隔离模式创建新的 VirtualDisplay 后，尽量在目标 display 上启动该 Activity 作为“可见的兜底界面”。
+ * - 主动请求焦点并尝试唤起输入法（IME），用于：
+ *   - 验证 display 是否可正常 attach window
+ *   - 避免部分 ROM 虚拟屏无窗口时出现黑屏/不可控状态
+ *
+ * **引用路径（常见）**
+ * - `VirtualDisplayController.showWelcomeOnActiveDisplayBestEffort`：在虚拟屏启动后展示。
+ *
+ * **使用注意事项**
+ * - `onBackPressed` 被吞掉：该界面设计为“兜底界面”，避免用户退出导致虚拟屏进入不可控黑屏。
+ */
 class WelcomeActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {

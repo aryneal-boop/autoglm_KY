@@ -86,6 +86,26 @@ import rikka.shizuku.Shizuku
 import com.example.autoglm.update.UpdateChecker
 import com.example.autoglm.update.UpdateInfo
 
+/**
+ * 对话与任务执行 Activity（主交互界面）。
+ *
+ * **用途**
+ * - 展示聊天消息流（用户输入、模型输出、动作日志、截图等）。
+ * - 作为“任务执行”的 UI 承载：
+ *   - 调用 Chaquopy 执行 Python 入口（通常是 `phone_agent.android_bridge.run_task`），并把回调映射为消息流。
+ * - 负责语音输入（录音 -> Python 语音转写 -> 转写文本作为任务输入）。
+ * - 接收悬浮窗广播（来自 [FloatingStatusService]）：停止、开始任务、按住说话等。
+ * - 处理用户介入（见 [UserInterventionGate]）：确认敏感操作/人工接管。
+ * - 可选：启动后检查更新（见 [UpdateChecker]）。
+ *
+ * **引用路径**
+ * - `app/src/main/AndroidManifest.xml` -> `<activity android:name=".ChatActivity" ...>`
+ * - 通常由 `MainActivity` 在校准完成后跳转进入。
+ *
+ * **使用注意事项**
+ * - 任务执行与录音属于耗时/高频操作：需使用后台线程/协程，避免阻塞主线程。
+ * - 与悬浮窗/广播交互较多：注意注册/反注册 receiver，避免泄露。
+ */
 class ChatActivity : ComponentActivity() {
 
     private val scrollDebugTag = "ChatScrollDebug"

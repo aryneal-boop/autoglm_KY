@@ -19,6 +19,19 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.RemoteInput
 import kotlin.concurrent.thread
 
+/**
+ * 跳转到系统“开发者选项/无线调试”相关设置页。
+ *
+ * **用途**
+ * - 在无线调试配对失败或需要用户手动操作时，提供便捷跳转入口。
+ *
+ * **引用路径（常见）**
+ * - `MainActivity`：引导用户开启无线调试。
+ * - `PairingService`：通知栏提示用户打开设置页刷新端口/重新生成配对码。
+ *
+ * **使用注意事项**
+ * - 不同 ROM 的开发者选项 Intent 可能不一致：这里采用 best-effort，失败则提示用户手动前往。
+ */
 fun startWirelessDebuggingSettings(context: Context) {
     try {
         val intent = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).apply {
@@ -33,6 +46,25 @@ fun startWirelessDebuggingSettings(context: Context) {
     }
 }
 
+/**
+ * 通知栏配对/连接前台服务（无线调试）。
+ *
+ * **用途**
+ * - 在后台执行无线调试配对闭环：
+ *   - 扫描 `_adb-tls-pairing._tcp.` 获取配对端口（或使用用户/调用方传入端口）。
+ *   - 在通知栏通过 `RemoteInput` 收集 6 位配对码。
+ *   - 执行 `adb pair`，成功后继续扫描 `_adb-tls-connect._tcp.` 并执行 `adb connect`。
+ *   - 最终用 `adb devices` 校验连接，并写入 [ConfigManager.setLastAdbEndpoint]。
+ * - 使用前台服务保证流程不被系统后台限制中断。
+ *
+ * **引用路径（常见）**
+ * - `MainActivity`：用户点击“开始配对/连接”时启动服务。
+ * - `PairingInputReceiver`：接收通知栏输入并回传到本服务继续执行。
+ *
+ * **使用注意事项**
+ * - 无线调试端口可能变化：本服务实现了扫描/重试/屏蔽失败端口等策略。
+ * - ADB 命令为耗时操作：服务内部通过后台线程执行，UI 侧只应监听通知结果。
+ */
 class PairingService : Service() {
 
     private val mainHandler = Handler(Looper.getMainLooper())

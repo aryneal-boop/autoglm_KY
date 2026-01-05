@@ -29,6 +29,20 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.random.Random
 
+/**
+ * 霓虹风格 UI 组件集合（Compose）。
+ *
+ * **用途**
+ * - 提供本项目统一的“霓虹/流光”视觉风格组件与配色：
+ *   - [NeonColors]：颜色调色板
+ *   - `GlowButton` / `GlowPanel` 等：带流光边框/发光效果的按钮与面板
+ *
+ * **引用路径（常见）**
+ * - `MainActivity` / `ChatActivity` / `SettingsActivity`：界面按钮与容器样式。
+ *
+ * **使用注意事项**
+ * - 这些组件偏视觉表现：不要在这里引入业务逻辑或耗时操作。
+ */
 // 霓虹色调色板
 object NeonColors {
     val bgDark = Color(0xFF0A0E14)

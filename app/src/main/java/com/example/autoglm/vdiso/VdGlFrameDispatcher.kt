@@ -19,6 +19,22 @@ import android.os.SystemClock
 import android.graphics.SurfaceTexture
 import android.view.Surface
 
+/**
+ * VirtualDisplay 帧分发器（OpenGL）。
+ *
+ * **用途**
+ * - 将 VirtualDisplay 的输出绑定到内部 `SurfaceTexture`（OES 外部纹理），在 GL 线程中进行两路分发：
+ *   - 预览输出：渲染到可选的 `previewSurface`（悬浮窗 TextureView/SurfaceView）。
+ *   - 截图输出：渲染到离屏 `ImageReader`（captureSurface），供上层读取最新帧并转为 Bitmap/base64。
+ * - 目标：实现“预览与截图互不干扰”，同时减少频繁的 bitmap 拷贝开销。
+ *
+ * **引用路径（常见）**
+ * - `ShizukuVirtualDisplayEngine`：启动时创建并持有本分发器。
+ *
+ * **使用注意事项**
+ * - EGL/GL 资源必须在同一线程创建与释放：本类使用 `HandlerThread` 维护 GL 线程。
+ * - 预览 Surface 可能随 UI 生命周期变化：设置/清空预览时需确保线程安全与资源释放。
+ */
 class VdGlFrameDispatcher {
 
     private var width: Int = 0

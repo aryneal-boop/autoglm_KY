@@ -7,6 +7,24 @@ import android.util.Log
 import android.view.Surface
 import java.lang.reflect.Proxy
 
+/**
+ * VirtualDisplay -> Surface 直出预览（调试/旧链路）。
+ *
+ * **用途**
+ * - 通过 Shizuku 反射创建 VirtualDisplay，并把输出直接绑定到外部传入的 [Surface]（例如 `SurfaceView`）。
+ * - 主要用于调试/验证虚拟屏是否能正常渲染到某个 Surface。
+ *
+ * **与 [ShizukuVirtualDisplayEngine] 的区别**
+ * - 本类更“直通”：VirtualDisplay 直接输出到传入 Surface，不经过 GL 分发与离屏截图缓存。
+ * - [ShizukuVirtualDisplayEngine] 提供完整的“截图 + 预览切换”能力，更适合主流程。
+ *
+ * **引用路径（常见）**
+ * - `MonitorActivity`：调试页面使用该类把虚拟屏输出渲染到 `SurfaceView`。
+ *
+ * **使用注意事项**
+ * - 依赖 Shizuku 权限与系统服务反射：不同 ROM 可能失败。
+ * - 该类持有外部 Surface：调用方需自行保证生命周期（例如 Surface destroyed 时停止）。
+ */
 object ShizukuVirtualDisplaySurfaceStreamer {
 
     private const val TAG = "VdIsoSurface"

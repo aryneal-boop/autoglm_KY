@@ -1,5 +1,20 @@
 package com.example.autoglm
 
+/**
+ * 悬浮窗状态文案映射器。
+ *
+ * **用途**
+ * - 将模型/执行过程中的“动作流文本”映射为更短、更易读的中文状态，用于悬浮窗状态条展示。
+ * - 典型输入来源：
+ *   - Python 回调 `on_action` 的输出
+ *   - [TaskStreamClassifier] 分类后的 kind/text
+ *
+ * **典型用法**
+ * - `val short = OverlayStatusTextMapper.map(kind, text)`
+ *
+ * **使用注意事项**
+ * - 该映射是 best-effort：无法识别时返回 `null`，上层应保留原文或维持上一次状态。
+ */
 object OverlayStatusTextMapper {
 
     fun map(kind: String?, text: String?): String? {

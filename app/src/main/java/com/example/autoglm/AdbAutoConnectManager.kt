@@ -6,6 +6,25 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 
+/**
+ * 启动阶段的 ADB 自动连接管理器。
+ *
+ * **用途**
+ * - 在 App 启动/进入主界面时，尽力自动恢复 ADB 可用性：
+ *   - 优先使用历史 endpoint（见 [ConfigManager.getLastAdbEndpoint]）快速 `adb connect`。
+ *   - 失败则通过 [AdbPortScanner] 扫描 `_adb-tls-connect._tcp.`，再重试连接。
+ *   - 连接成功后通过 `adb devices` 校验状态，并写回 `LAST_ADB_ENDPOINT`。
+ *
+ * **输出**
+ * - 通过 `onResult(Result)` 在主线程回调状态（初始化/连接/扫描/成功/失败）。
+ *
+ * **引用路径（常见）**
+ * - `MainActivity`：启动引导/校准流程中触发自动连接，更新 UI。
+ *
+ * **使用注意事项**
+ * - 该类内部启动后台线程执行 ADB 命令：不要在短时间内重复创建/启动多个实例。
+ * - NSD/ADB 在不同 ROM 上表现不一致：上层应允许用户手动触发配对作为兜底。
+ */
 class AdbAutoConnectManager(
     private val context: Context,
 ) {

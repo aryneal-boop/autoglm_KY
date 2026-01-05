@@ -1119,6 +1119,23 @@ private fun ForceLoadingScreen(
     }
 }
 
+/**
+ * App 启动入口 Activity（Compose）。
+ *
+ * **用途**
+ * - 作为 LAUNCHER Activity，承载启动引导与校准流程：
+ *   - 权限引导（通知、悬浮窗、录音、电池白名单等）
+ *   - 无线调试/ADB 自动连接（见 `ensureLocalAdbReady` / [AdbAutoConnectManager]）
+ *   - Shizuku 权限申请（可选）
+ * - 初始化 Chaquopy Python 环境，并把 Android 配置注入 Python 环境变量（见 [PythonConfigBridge]）。
+ *
+ * **引用路径**
+ * - `app/src/main/AndroidManifest.xml` -> `<activity android:name=".MainActivity">` + LAUNCHER intent-filter
+ *
+ * **使用注意事项**
+ * - 启动阶段所有初始化应保持 best-effort：失败只影响能力，不应阻塞进入主界面。
+ * - ADB/NSD/网络等操作属于耗时任务：实现上需在后台线程/协程执行，避免阻塞主线程。
+ */
 class MainActivity : ComponentActivity() {
     private var bootStageExtraState = mutableStateOf<String?>(null)
 

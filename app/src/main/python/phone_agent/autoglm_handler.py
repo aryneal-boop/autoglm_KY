@@ -115,11 +115,34 @@ def _redirect_std_to_assistant(callback: Any):
 
 class AutoGLMHandler:
     def __init__(self, callback: Any = None, internal_adb_path: str | None = None):
+        """AutoGLM Android 任务执行器（Python 侧）。
+
+        **用途**
+        - 作为 Android 端任务执行的核心闭环控制器：
+          - ADB/连接状态检查
+          - 截图 -> 模型决策 -> 动作执行 的循环
+          - 将过程通过 callback 实时推送回 Kotlin UI
+
+        Args:
+            callback: Kotlin 侧回调对象。
+            internal_adb_path: Android 私有目录下 adb 路径（用于 Python 侧走本地 ADB）。
+
+        使用注意事项:
+        - 该类必须保证“不崩溃宿主”：所有异常都应被捕获并回传到 UI。
+        - 回调必须安全：不要让 callback 的异常影响主循环（见 _safe_call）。
+        """
         self.callback = callback
         self.internal_adb_path = internal_adb_path
 
     def start_task(self, user_goal: str) -> str:
-        """入口函数：启动任务并执行闭环。"""
+        """入口函数：启动任务并执行闭环。
+
+        Args:
+            user_goal: 用户任务目标文本。
+
+        Returns:
+            最终输出文本（也会通过 callback.on_done 推送）。
+        """
 
         user_goal = (user_goal or "").strip()
         if not user_goal:

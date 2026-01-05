@@ -5,6 +5,33 @@ import android.util.Log
 import rikka.shizuku.Shizuku
 import java.io.ByteArrayOutputStream
 
+/**
+ * Shizuku 通道桥接（Kotlin 侧）。
+ *
+ * **用途**
+ * - 在用户授予 Shizuku 权限后，通过 Shizuku 的 binder 以高权限执行 `sh -c <command>`，
+ *   用于：
+ *   - 虚拟屏/系统服务相关能力（例如配合 `vdiso` 包的系统服务反射调用）。
+ *   - Python 侧在 `CONNECT_MODE=SHIZUKU` 时执行 `screencap/input/am` 等命令（由 Python 调用该类的静态方法）。
+ *
+ * **返回码约定（见 [execResult]）**
+ * - `0`：命令成功
+ * - `-1`：Shizuku binder 不可用
+ * - `-2`：未授予 Shizuku 权限
+ * - `-3`：执行过程中抛异常
+ *
+ * **典型用法**
+ * - `ShizukuBridge.execResult("dumpsys window windows")`
+ *
+ * **引用路径（常见）**
+ * - `VirtualDisplayController` / `vdiso.*`：创建虚拟屏/设置焦点等。
+ * - `ImeFocusDeadlockController`：通过 `dumpsys window` 监测 IME 焦点死锁场景。
+ * - Python：`phone_agent/shizuku.py`（通过 Chaquopy 调用本类静态方法）。
+ *
+ * **使用注意事项**
+ * - 该通道依赖用户安装并启用 Shizuku，且授予当前 App 权限。
+ * - 命令输出可能很大：上层应避免频繁执行 `dumpsys` 等重命令，必要时降低轮询频率。
+ */
 object ShizukuBridge {
 
     private const val TAG = "AutoglmShizuku"

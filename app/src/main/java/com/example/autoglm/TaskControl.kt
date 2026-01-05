@@ -8,6 +8,35 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 
+/**
+ * 全局任务控制器（Kotlin 侧）。
+ *
+ * **用途**
+ * - 维护“是否有任务在运行”的全局状态：
+ *   - [isTaskRunning]：当前是否处于任务执行期
+ *   - [shouldStopTask]：是否收到停止信号（由 UI/悬浮窗触发）
+ * - 使用单线程 `ExecutorService` 串行执行 Python 任务，避免并发导致：
+ *   - ADB server 状态冲突
+ *   - Python 解释器/回调并发写 UI 导致的竞态
+ * - 在停止任务时做“尽力而为”的善后：
+ *   - 取消协程 Job
+ *   - 中断 Python 线程（如果已绑定）
+ *   - 清理虚拟屏（见 [VirtualDisplayController]）
+ *   - 触发 `adb kill-server` / 发送全局 touch-up（避免长按卡死等）
+ *
+ * **典型用法**
+ * - 启动任务：外部（例如 `ChatActivity` / `FloatingStatusService`）调用 [tryStartPythonTask] 提交任务。
+ * - 任务循环中：Python/Kotlin 侧可通过 [shouldContinue] 判断是否应继续。
+ * - 停止：调用 [stop] 或 [forceStopPython]。
+ *
+ * **引用路径（常见）**
+ * - `AppState.init`：进程启动时注入 `applicationContext`。
+ * - `ChatActivity` / `FloatingStatusService`：发起/停止任务。
+ *
+ * **使用注意事项**
+ * - 该对象是进程级单例：多处调用需遵守“只允许一个任务运行”的约束。
+ * - 停止逻辑采用 best-effort：任何异常都不应影响 UI 线程；因此内部大量 `try/catch` 为设计选择。
+ */
 object TaskControl {
 
     private const val TAG = "AutoglmAdb"

@@ -11,6 +11,20 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 
+/**
+ * Compose 主题入口（Material3）。
+ *
+ * **用途**
+ * - 定义 `AutoglmTheme`，为应用页面提供统一的颜色方案与字体排版（[Typography]）。
+ * - 支持 Android 12+ 的动态取色（Dynamic Color）。
+ *
+ * **引用路径（常见）**
+ * - `MainActivity`：`setContent { AutoglmTheme { ... } }`
+ *
+ * **使用注意事项**
+ * - 主题仅用于 UI：不要在此引入业务逻辑。
+ * - 若关闭动态取色，可将 `dynamicColor=false` 以保持固定视觉风格。
+ */
 private val DarkColorScheme = darkColorScheme(
     primary = Purple80,
     secondary = PurpleGrey80,

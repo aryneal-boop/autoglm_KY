@@ -17,6 +17,35 @@ import com.example.autoglm.vdiso.ShizukuVirtualDisplayEngine
 import com.example.autoglm.ShizukuBridge
 import com.example.autoglm.input.VirtualAsyncInputInjector
 
+/**
+ * 虚拟屏/虚拟隔离模式的 Kotlin 侧门面（Facade）。
+ *
+ * **用途**
+ * - 根据 [ConfigManager.getExecutionEnvironment] 决定是否启用“虚拟隔离模式”。
+ * - 在虚拟隔离模式下：
+ *   - 通过 [ShizukuVirtualDisplayEngine] 创建/复用 VirtualDisplay，并维护当前 `displayId`。
+ *   - 提供“截图/输入注入/聚焦显示”等能力给上层（Kotlin UI 与 Python 侧设备抽象）。
+ * - 在主屏模式下：
+ *   - 确保虚拟屏被停止并清理状态。
+ *
+ * **典型用法**
+ * - 任务开始前（例如 `FloatingStatusService` 执行任务前）：
+ *   - `val did = VirtualDisplayController.prepareForTask(context, adbExecPath)`
+ * - Python 侧截图：
+ *   - `VirtualDisplayController.screenshotPngBase64NonBlack()`（由 Chaquopy 反射调用/静态调用）
+ * - 注入点击：
+ *   - `VirtualDisplayController.injectTapBestEffort(displayId, x, y)`
+ *
+ * **引用路径（常见）**
+ * - `AppState.init`：进程启动时做一次虚拟屏状态 reset。
+ * - `SettingsActivity`：切换主屏/虚拟隔离后会触发 cleanup。
+ * - `FloatingStatusService`：虚拟隔离模式下绑定预览 Surface 与输入注入。
+ * - `vdiso.ImeFocusDeadlockController`：读取 displayId 并处理 IME 焦点死锁。
+ *
+ * **使用注意事项**
+ * - 依赖 Shizuku：若 binder 不可用或权限未授予，本控制器会返回 `null` 并降级。
+ * - 所有对外能力均尽量采用 best-effort：失败返回空字符串/直接 return，避免影响主流程。
+ */
 object VirtualDisplayController {
     @Volatile
     private var activeDisplayId: Int? = null

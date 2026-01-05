@@ -87,6 +87,29 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import rikka.shizuku.Shizuku
 
+/**
+ * 悬浮窗状态条 + 工具箱前台服务。
+ *
+ * **用途**
+ * - 以前台服务形式常驻，提供系统级悬浮窗入口：
+ *   - 显示任务状态（空闲/执行中/错误等）
+ *   - 提供“开始任务/停止任务/按住说话”等快捷交互
+ * - 语音交互：录音（AudioRecord）并调用 Python 侧语音转写，将文本回传给 `ChatActivity` 执行。
+ * - 工具箱模式：
+ *   - 主屏模式下的截图预览
+ *   - 虚拟隔离模式下绑定 VirtualDisplay 预览 Surface（见 [VirtualDisplayController]/`vdiso.ShizukuVirtualDisplayEngine`）
+ *   - 触摸层：将用户在预览上的点击/滑动注入到目标 display（见 `input.VirtualAsyncInputInjector`）
+ * - IME 焦点死锁防护：创建 [com.example.autoglm.vdiso.ImeFocusDeadlockController]，在需要时提示/遮罩。
+ * - 与 `ChatActivity` 通过广播协议交互（ACTION_*），保证即使 App 不在前台也可触发关键操作。
+ *
+ * **引用路径**
+ * - `app/src/main/AndroidManifest.xml` -> `<service android:name=".FloatingStatusService" ...>`
+ *
+ * **使用注意事项**
+ * - 悬浮窗依赖 `SYSTEM_ALERT_WINDOW`：未授权时应提示用户授权。
+ * - 录音需要 `RECORD_AUDIO`：未授权时需走权限申请。
+ * - 注意资源释放：WindowManager view、AudioRecord、协程 scope 等需要在 `onDestroy` 做善后。
+ */
 class FloatingStatusService : Service() {
 
     private val TAG = "FloatingStatusService"

@@ -20,6 +20,21 @@ import android.view.animation.DecelerateInterpolator
 import android.hardware.display.DisplayManager
 
 /**
+ * 点击指示器悬浮窗服务。
+ *
+ * **用途**
+ * - 在指定坐标显示一个短暂的圆形指示器（通常用于调试/向用户反馈“已注入点击/已接收到点击”）。
+ * - 支持在虚拟隔离模式下把指示器绘制到指定 `displayId` 的 WindowManager 上。
+ *
+ * **引用路径（常见）**
+ * - `FloatingStatusService`：点击预览层时显示指示器。
+ *
+ * **使用注意事项**
+ * - 主屏模式下存在坐标补偿（状态栏/悬浮窗 UI 的历史偏移逻辑）；虚拟隔离模式下则不做偏移，
+ *   确保圆心严格对齐注入坐标。
+ * - 依赖 `SYSTEM_ALERT_WINDOW`：未授权时添加窗口可能失败。
+ */
+/**
  * 点击指示器悬浮窗服务
  * 在屏幕上指定坐标显示一个圆形指示器，1秒后渐变消失
  */

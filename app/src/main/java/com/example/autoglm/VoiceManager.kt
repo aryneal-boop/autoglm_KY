@@ -7,6 +7,23 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 
+/**
+ * 系统语音识别封装（SpeechRecognizer）。
+ *
+ * **用途**
+ * - 使用系统自带语音识别服务将语音转为文本（与本项目的“录音 -> Python 转写”不同，这是系统 ASR）。
+ * - 封装识别生命周期并通过 [Listener] 统一回调：ready/listening/partial/final/error/end。
+ *
+ * **典型用法**
+ * - `VoiceManager(context, listener).start()`
+ *
+ * **引用路径（常见）**
+ * - 可用于 `ChatActivity` 或 `FloatingStatusService` 的备用语音输入方案（以实际接入为准）。
+ *
+ * **使用注意事项**
+ * - 依赖设备是否安装/启用语音识别引擎：不可用时会回调错误并结束。
+ * - 需要录音权限：系统会在缺少权限时返回 `ERROR_INSUFFICIENT_PERMISSIONS`。
+ */
 class VoiceManager(
     context: Context,
     private val listener: Listener,

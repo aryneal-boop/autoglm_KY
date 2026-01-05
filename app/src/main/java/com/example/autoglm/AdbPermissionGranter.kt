@@ -3,6 +3,26 @@ package com.example.autoglm
 import android.content.Context
 
 
+/**
+ * 通过 ADB/Shizuku“尽力自动授权”的工具。
+ *
+ * **用途**
+ * - 在用户完成无线调试连接或授予 Shizuku 权限后，自动执行部分命令减少手动配置成本：
+ *   - `appops set <pkg> SYSTEM_ALERT_WINDOW allow`：允许悬浮窗
+ *   - `dumpsys deviceidle whitelist +<pkg>`：加入电池白名单
+ *   - `settings put secure enabled_notification_listeners <component>`：启用通知监听（需要系统允许写 secure setting）
+ *
+ * **典型用法**
+ * - ADB 模式：`AdbPermissionGranter.applyAdbPowerUserPermissions(context)`
+ * - Shizuku 模式：`AdbPermissionGranter.applyShizukuPowerUserPermissions(context)`
+ *
+ * **引用路径（常见）**
+ * - `AdbAutoConnectManager`：连接成功后触发 power user permissions（best-effort）。
+ *
+ * **使用注意事项**
+ * - 不同 ROM/Android 版本对 `settings put secure` 限制不同，可能失败；失败时应提示用户手动授权。
+ * - 该类会记录命令输出到 console 字符串，便于 UI 展示与排障。
+ */
 internal object AdbPermissionGranter {
 
     data class GrantResult(

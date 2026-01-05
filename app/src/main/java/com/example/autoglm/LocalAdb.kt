@@ -11,6 +11,35 @@ import java.io.FileInputStream
 import java.io.InputStream
 import kotlin.concurrent.thread
 
+/**
+ * 手机端本地 ADB 子系统（Kotlin 侧）。
+ *
+ * **用途**
+ * - 在 Android 设备上运行“内置 ADB 二进制”，用于本机（常见是 `127.0.0.1:PORT`）无线调试配对/连接后执行控制命令。
+ * - 统一封装：
+ *   - ADB 可执行文件定位（`adb` 脚本包装器 / `adb.bin` ELF）
+ *   - 环境变量注入（`HOME`/`TMPDIR`/`LD_LIBRARY_PATH`/`ADB_VENDOR_KEYS`）
+ *   - 命令执行与输出截断（便于排障）
+ *
+ * **实现策略要点**
+ * - 优先使用 `filesDir/bin/adb` 的“脚本包装器”，并统一用 `/system/bin/sh` 启动，
+ *   规避部分 ROM 的 `noexec`/`EACCES`/X_OK 差异。
+ * - 若只能执行 ELF，则通过系统 `linker64/linker` 启动 `adb.bin`，避免直接 exec 触发限制。
+ *
+ * **典型用法**
+ * - `val adbExec = LocalAdb.resolveAdbExecPath(ctx)`
+ * - `LocalAdb.runCommand(ctx, LocalAdb.buildAdbCommand(ctx, adbExec, listOf("devices")))`
+ *
+ * **引用路径（常见）**
+ * - `PairingService`：执行 `adb pair/connect/devices`。
+ * - `AdbAutoConnectManager`：启动时自动重连。
+ * - `PermissionUtils` / `AdbPermissionGranter`：通过 `adb shell` 查询/授予权限。
+ * - `TaskControl`：停止任务时 `adb kill-server` 作为善后。
+ *
+ * **使用注意事项**
+ * - ADB server/命令执行是潜在耗时操作：避免在主线程调用。
+ * - 部分 ROM 对 adb server 拉起子进程的路径有兼容性问题：本实现倾向于用“nodaemon server”方式启动。
+ */
 internal object LocalAdb {
 
     private const val TAG = "AutoglmAdb"

@@ -1,5 +1,18 @@
 package com.example.autoglm
 
+/**
+ * 语音交互提示文案集合。
+ *
+ * **用途**
+ * - 统一维护语音相关流程（录音/识别/转写）在 UI/悬浮窗中展示的短文案，避免散落硬编码。
+ *
+ * **引用路径（常见）**
+ * - `ChatActivity`：语音模式提示与 Toast。
+ * - `FloatingStatusService`：悬浮窗语音入口状态提示。
+ *
+ * **使用注意事项**
+ * - 该文件仅存放 UI 文案常量：不要在这里引入业务逻辑。
+ */
 object VoicePromptText {
     const val LISTENING = "正在倾听，请讲话..."
     const val RECOGNIZING = "识别中..."

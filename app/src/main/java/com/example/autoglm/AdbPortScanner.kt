@@ -9,6 +9,26 @@ import android.util.Log
 import java.net.InetAddress
 import java.util.concurrent.ConcurrentHashMap
 
+/**
+ * ADB 无线调试端口扫描器（mDNS/NSD）。
+ *
+ * **用途**
+ * - 通过 Android NSD（mDNS）发现局域网广播的无线调试服务端口：
+ *   - `_adb-tls-pairing._tcp.`：配对端口（用于 `adb pair`）
+ *   - `_adb-tls-connect._tcp.`：连接端口（用于 `adb connect`）
+ *
+ * **典型用法**
+ * - 创建扫描器并在回调中拿到 [Endpoint]：
+ *   - `AdbPortScanner(context, SERVICE_TYPE_CONNECT, onEndpoint = { ... }).start()`
+ *
+ * **引用路径（常见）**
+ * - `PairingService`：配对/连接阶段扫描端口并重试。
+ * - `AdbAutoConnectManager`：启动时扫描 connect 端口做自动连接。
+ *
+ * **使用注意事项**
+ * - 为提升发现成功率，会尝试获取 `WifiManager.MulticastLock`；请在 `stop()` 中及时释放。
+ * - NSD 在部分系统上不稳定：上层需要设计重试/超时策略（本项目已在 `PairingService` 中实现）。
+ */
 class AdbPortScanner(
     private val context: Context,
     private val serviceType: String = SERVICE_TYPE_CONNECT,

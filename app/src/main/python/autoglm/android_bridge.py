@@ -13,19 +13,28 @@ def _safe_call(cb: Any, name: str, *args) -> None:
         fn(*args)
     except Exception:
         # Never let callback crash the agent loop
+        # 中文说明：回调必须“吞异常”，避免 UI 回调异常导致 Python 任务主循环崩溃。
         pass
 
 
 def run_task(task: str, callback: Any = None, internal_adb_path: str | None = None) -> str:
-    """Android entrypoint.
+    """Android 侧 Python 入口函数（Chaquopy 调用）。
+
+    **用途**
+    - 作为 Kotlin/Chaquopy 调用 Python 执行任务的入口。
+    - 在任务循环中，通过 callback 将执行进度（动作/截图/最终结果/错误）实时推送回 Android UI。
 
     Args:
-        task: 用户任务文本
-        callback: Kotlin 侧对象，支持 on_action/on_screenshot/on_assistant/on_error/on_done
-        internal_adb_path: Android 私有目录下的 adb/adb.bin 路径
+        task: 用户任务文本。
+        callback: Kotlin 侧对象，支持 on_action/on_screenshot/on_assistant/on_error/on_done 等方法。
+        internal_adb_path: Android 私有目录下的 adb/adb.bin 路径（用于 Python 侧走本地 ADB）。
 
     Returns:
-        最终文本结果（会同时通过 callback.on_done 推送一份）
+        最终文本结果（同时也会通过 callback.on_done 推送一份）。
+
+    使用注意事项:
+    - 该函数应保持 best-effort：任何异常都必须捕获并通过 on_error/on_done 回传，避免崩溃影响宿主进程。
+    - callback 回调同样必须安全：见 _safe_call。
     """
 
     try:

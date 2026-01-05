@@ -4,6 +4,21 @@ import android.os.IBinder
 import android.util.Log
 import rikka.shizuku.ShizukuBinderWrapper
 
+/**
+ * 系统服务获取中心（通过 Shizuku 代理）。
+ *
+ * **用途**
+ * - 通过反射 `android.os.ServiceManager.getService(name)` 获取系统 service binder，
+ *   再用 `ShizukuBinderWrapper` 包装成“可跨进程/提权访问”的 binder。
+ * - 向 `vdiso` 虚拟隔离模块提供关键系统服务的 `asInterface` 实例：
+ *   - DisplayManager / InputManager / ActivityTaskManager / WindowManager
+ *
+ * **引用路径（常见）**
+ * - `ShizukuVirtualDisplayEngine`：创建 VirtualDisplay、切换输出 Surface、设置 IME 策略等。
+ *
+ * **使用注意事项**
+ * - 依赖隐藏 API/系统 AIDL：不同 Android 版本类名/方法签名可能变化，调用方要做好兜底。
+ */
 object ShizukuServiceHub {
 
     private const val TAG = "VdIsoServices"

@@ -9,6 +9,30 @@ import android.util.Log
 import android.view.Display
 import java.lang.reflect.Proxy
 
+/**
+ * Shizuku VirtualDisplay 引擎（虚拟隔离核心）。
+ *
+ * **用途**
+ * - 通过 Shizuku 包装的系统服务 binder（见 [ShizukuServiceHub]）反射调用 `IDisplayManager`，创建 VirtualDisplay。
+ * - 默认输出到内部的离屏帧接收链路（GL 分发 + ImageReader/纹理）以支持：
+ *   - 虚拟屏截图（给模型识别/决策）
+ * - 在需要“0 bitmap 预览”时，支持把 VirtualDisplay 输出 surface 临时切换到 UI 的 `SurfaceView/TextureView`。
+ * - 提供聚焦显示能力（通过 InputManager 的 `setFocusedDisplay` best-effort），减少黑屏/输入路由异常。
+ *
+ * **典型用法**
+ * - 创建/复用虚拟屏：`ensureStarted(Args(...))`
+ * - 切换输出：`setOutputSurface(surface)` / `restoreOutputSurfaceToImageReader()`
+ * - 截图：`captureLatestBitmap()`（由上层转换成 base64）
+ * - 聚焦：`ensureFocusedDisplay(displayId)`
+ *
+ * **引用路径（常见）**
+ * - Kotlin：`VirtualDisplayController`（统一入口与状态管理）。
+ * - Kotlin：`FloatingStatusService`（工具箱预览/切换输出 surface）。
+ *
+ * **使用注意事项**
+ * - 强依赖 Shizuku 权限与系统服务反射：不同 ROM/Android 版本可能存在 API 差异，本实现大量采用候选方法匹配 + best-effort。
+ * - 注意线程模型：启动/停止为同步方法，但内部图像与 GL 线程在后台运行，停止时要避免资源泄露。
+ */
 object ShizukuVirtualDisplayEngine {
 
     private const val TAG = "VdIsoEngine"

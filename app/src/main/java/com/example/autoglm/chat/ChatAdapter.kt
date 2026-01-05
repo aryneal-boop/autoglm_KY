@@ -32,6 +32,23 @@ import com.example.autoglm.ui.NeonColors
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
+/**
+ * 聊天消息列表适配器（RecyclerView）。
+ *
+ * **用途**
+ * - 将 [ChatMessage] 渲染为不同 ViewType（用户文本/AI 文本/AI 截图）。
+ * - 支持：
+ *   - 图片消息的异步解码与缩放（后台线程池）
+ *   - LruCache 缓存 bitmap，减少滚动抖动与重复解码
+ *   - 文本长按复制等交互
+ *
+ * **引用路径（常见）**
+ * - `ChatActivity`：创建并绑定到 RecyclerView。
+ *
+ * **使用注意事项**
+ * - Bitmap 缓存回收要谨慎：ImageView 可能仍在绘制（因此这里避免主动 recycle）。
+ * - 该适配器内部有线程池：进程退出时会随进程回收；如未来做模块化可考虑统一管理。
+ */
 class ChatAdapter(
     private val items: MutableList<ChatMessage> = mutableListOf(),
 ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {

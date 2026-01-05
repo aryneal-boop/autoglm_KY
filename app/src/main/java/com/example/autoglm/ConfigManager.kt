@@ -4,6 +4,32 @@ import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
+/**
+ * App 运行时配置管理器（加密存储）。
+ *
+ * **用途**
+ * - 统一管理：
+ *   - 模型服务配置（`baseUrl/apiKey/modelName`）
+ *   - ADB 最近连接信息（endpoint + 时间戳）
+ *   - 执行环境（主屏/虚拟隔离）与连接模式（无线调试/Shizuku）
+ *   - 虚拟屏参数（DPI、分辨率预设）
+ * - 使用 `EncryptedSharedPreferences` 保护敏感信息（尤其是 `apiKey`）。
+ *
+ * **典型用法**
+ * - Kotlin 侧读取：`val cfg = ConfigManager(context).getConfig()`
+ * - Kotlin 侧写入：`ConfigManager(context).setConfig(...)`
+ * - Python 侧会通过 [PythonConfigBridge] 将这些配置注入到 `os.environ`。
+ *
+ * **引用路径（常见）**
+ * - `SettingsActivity`：编辑并保存模型/虚拟屏参数。
+ * - `PythonConfigBridge.injectModelServiceConfig`：将配置注入 Python 环境变量。
+ * - `AdbAutoConnectManager` / `PairingService`：读取/写入 `LAST_ADB_ENDPOINT`。
+ * - `VirtualDisplayController`：读取执行环境、虚拟屏 DPI/分辨率。
+ *
+ * **使用注意事项**
+ * - `EncryptedSharedPreferences` 首次初始化可能较慢：避免在主线程频繁创建实例；建议复用同一个 `ConfigManager`。
+ * - `apiKey` 为空是允许的（例如仅做 UI 演示/本地测试），调用方需要自己做校验与友好提示。
+ */
 class ConfigManager(context: Context) {
     data class ModelServiceConfig(
         val baseUrl: String,

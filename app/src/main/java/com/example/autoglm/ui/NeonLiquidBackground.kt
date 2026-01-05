@@ -19,6 +19,19 @@ import androidx.compose.ui.graphics.toArgb
 import kotlin.math.cos
 import kotlin.math.sin
 
+/**
+ * 霓虹液态动态背景（Compose）。
+ *
+ * **用途**
+ * - 绘制慢速流动的渐变+光斑背景，用于提升“赛博霓虹”质感。
+ * - 主要作为页面背景层使用（例如 `MainActivity`、`ChatActivity`、`SettingsActivity`）。
+ *
+ * **参数说明**
+ * - `hueShiftDegrees`：色相偏移，用于在不同页面/状态下做轻微色调差异。
+ *
+ * **使用注意事项**
+ * - 该组件会持续动画：尽量只在背景层使用，避免叠加过多导致 GPU 负载升高。
+ */
 @androidx.compose.runtime.Composable
 fun NeonLiquidBackground(
     modifier: Modifier = Modifier,
