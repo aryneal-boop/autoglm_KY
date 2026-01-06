@@ -60,7 +60,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
                 android:fontFamily="monospace"
-                android:text="例如：https://api.openai.com/v1"
+                android:text="例如：https://open.bigmodel.cn/api/paas/v4"
                 android:textColor="@color/text_hint"
                 android:textSize="11sp" />
 
@@ -119,7 +119,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
                 android:fontFamily="monospace"
-                android:text="例如：gpt-4o 或 glm-4"
+                android:text="例如：autoglm-phone"
                 android:textColor="@color/text_hint"
                 android:textSize="11sp" />
 
@@ -152,7 +152,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
                 android:fontFamily="monospace"
-                android:text="虚拟屏幕密度（dpi），例如：142"
+                android:text="虚拟屏幕密度（dpi），例如：480"
                 android:textColor="@color/text_hint"
                 android:textSize="11sp" />
 
@@ -185,7 +185,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
                 android:fontFamily="monospace"
-                android:text="虚拟屏幕分辨率预设（默认 480P）"
+                android:text="虚拟屏幕分辨率预设（默认 1080P）"
                 android:textColor="@color/text_hint"
                 android:textSize="11sp" />
 

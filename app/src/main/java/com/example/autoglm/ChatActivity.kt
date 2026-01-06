@@ -1373,7 +1373,7 @@ class ChatActivity : ComponentActivity() {
         return try {
             ConfigManager(this).getAdbConnectMode()
         } catch (_: Exception) {
-            ConfigManager.ADB_MODE_WIRELESS_DEBUG
+            ConfigManager.ADB_MODE_SHIZUKU
         }
     }
 
@@ -2256,7 +2256,7 @@ class ChatActivity : ComponentActivity() {
                     val connectMode = try {
                         ConfigManager(this@ChatActivity).getAdbConnectMode()
                     } catch (_: Exception) {
-                        ConfigManager.ADB_MODE_WIRELESS_DEBUG
+                        ConfigManager.ADB_MODE_SHIZUKU
                     }
                     finalText = if (connectMode == ConfigManager.ADB_MODE_SHIZUKU) {
                         mod.callAttr("run_task", task, callback, null).toString()

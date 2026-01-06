@@ -51,7 +51,7 @@ object PythonConfigBridge {
         val adbMode = try {
             cm.getAdbConnectMode()
         } catch (_: Exception) {
-            ConfigManager.ADB_MODE_WIRELESS_DEBUG
+            ConfigManager.ADB_MODE_SHIZUKU
         }
         setEnv(environ, "AUTOGM_CONNECT_MODE", adbMode)
         setEnv(environ, "PHONE_AGENT_CONNECT_MODE", adbMode)

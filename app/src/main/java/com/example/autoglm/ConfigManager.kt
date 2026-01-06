@@ -118,9 +118,9 @@ class ConfigManager(context: Context) {
     }
 
     fun getAdbConnectMode(): String {
-        return prefs.getString(KEY_ADB_CONNECT_MODE, ADB_MODE_WIRELESS_DEBUG)
+        return prefs.getString(KEY_ADB_CONNECT_MODE, ADB_MODE_SHIZUKU)
             .orEmpty()
-            .ifEmpty { ADB_MODE_WIRELESS_DEBUG }
+            .ifEmpty { ADB_MODE_SHIZUKU }
     }
 
     fun setAdbConnectMode(value: String) {
@@ -185,14 +185,14 @@ class ConfigManager(context: Context) {
         const val DEFAULT_API_KEY = ""
         const val DEFAULT_MODEL_NAME = "autoglm-phone"
 
-        const val DEFAULT_VIRTUAL_DISPLAY_DPI = 142
+        const val DEFAULT_VIRTUAL_DISPLAY_DPI = 480
 
         const val RES_480P = "480P"
         const val RES_720P = "720P"
         const val RES_1080P = "1080P"
 
         val VIRTUAL_DISPLAY_RESOLUTION_PRESETS = setOf(RES_480P, RES_720P, RES_1080P)
-        const val DEFAULT_VIRTUAL_DISPLAY_RESOLUTION = RES_480P
+        const val DEFAULT_VIRTUAL_DISPLAY_RESOLUTION = RES_1080P
 
         private fun align16(value: Int): Int {
             val v = value.coerceAtLeast(1)

@@ -475,15 +475,7 @@ private fun CalibrationScreen(
     val scope = rememberCoroutineScope()
 
     val config = remember { ConfigManager(context.applicationContext) }
-    var adbMode by rememberSaveable {
-        mutableStateOf(
-            try {
-                config.getAdbConnectMode()
-            } catch (_: Exception) {
-                ConfigManager.ADB_MODE_WIRELESS_DEBUG
-            }
-        )
-    }
+    val adbMode = ConfigManager.ADB_MODE_SHIZUKU
 
     var shizukuBinderReady by remember { mutableStateOf(false) }
     var shizukuGranted by remember { mutableStateOf(false) }
@@ -494,9 +486,6 @@ private fun CalibrationScreen(
     var hasOverlayPermission by remember { mutableStateOf(false) }
     var hasBatteryWhitelist by remember { mutableStateOf(false) }
 
-    var autoState by remember { mutableStateOf(AdbAutoConnectManager.State.INITIALIZING) }
-    var autoMessage by remember { mutableStateOf("") }
-
     var apiAvailable by remember { mutableStateOf<Boolean?>(null) }
     var apiTesting by rememberSaveable { mutableStateOf(false) }
     var apiLastText by rememberSaveable { mutableStateOf("") }
@@ -504,11 +493,7 @@ private fun CalibrationScreen(
     var showApiRaw by rememberSaveable { mutableStateOf(false) }
 
     val apiOk = apiAvailable == true
-    val connectMethodOk = if (adbMode == ConfigManager.ADB_MODE_SHIZUKU) {
-        shizukuGranted
-    } else {
-        autoState == AdbAutoConnectManager.State.CONNECTED
-    }
+    val connectMethodOk = shizukuGranted
     val allReady = hasNotificationPermission && apiOk && connectMethodOk
 
     fun summarizeApiTest(raw: String): String {
@@ -621,19 +606,6 @@ private fun CalibrationScreen(
         }
     )
 
-    val autoConnectManager = remember {
-        AdbAutoConnectManager(context.applicationContext)
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            try {
-                autoConnectManager.stop()
-            } catch (_: Exception) {
-            }
-        }
-    }
-
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
@@ -641,17 +613,15 @@ private fun CalibrationScreen(
                 refreshOverlayPermission()
                 refreshBatteryWhitelist()
 
-                if (adbMode == ConfigManager.ADB_MODE_SHIZUKU) {
-                    shizukuBinderReady = try {
-                        Shizuku.pingBinder()
-                    } catch (_: Throwable) {
-                        false
-                    }
-                    shizukuGranted = try {
-                        Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
-                    } catch (_: Throwable) {
-                        false
-                    }
+                shizukuBinderReady = try {
+                    Shizuku.pingBinder()
+                } catch (_: Throwable) {
+                    false
+                }
+                shizukuGranted = try {
+                    Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+                } catch (_: Throwable) {
+                    false
                 }
             }
         }
@@ -659,51 +629,27 @@ private fun CalibrationScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    LaunchedEffect(shizukuGranted) {
+        if (!shizukuGranted) return@LaunchedEffect
+        if (shizukuAutoInjected) return@LaunchedEffect
+        shizukuAutoInjected = true
+        try {
+            AppPackageResolver.prewarmThirdPartyPackagesAsync()
+        } catch (_: Throwable) {
+        }
+    }
+
     LaunchedEffect(Unit) {
         refreshNotificationPermission()
         refreshOverlayPermission()
         refreshBatteryWhitelist()
         try {
-            runApiAvailabilityTest()
-        } catch (_: Throwable) {
-        }
-    }
-
-    LaunchedEffect(adbMode, shizukuGranted) {
-        try {
-            autoConnectManager.stop()
+            config.setAdbConnectMode(adbMode)
         } catch (_: Exception) {
         }
-
-        fun startAutoConnect() {
-            autoConnectManager.start { result ->
-                autoState = result.state
-                autoMessage = result.message
-                if (result.state == AdbAutoConnectManager.State.CONNECTED) {
-                    try {
-                        val intent = Intent(context, MainActivity::class.java).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-                            putExtra(EXTRA_BOOT_STAGE, BOOT_STAGE_LOADING)
-                        }
-                        context.startActivity(intent)
-                    } catch (_: Exception) {
-                    }
-                    onAdbConnected()
-                }
-            }
-        }
-
-        if (adbMode == ConfigManager.ADB_MODE_SHIZUKU) {
-            // 按需求：Shizuku 模式不走无线调试的自动连接逻辑
-            autoState = AdbAutoConnectManager.State.INITIALIZING
-            autoMessage = if (shizukuGranted) {
-                "Shizuku 模式：已授权"
-            } else {
-                "Shizuku 模式：等待授权"
-            }
-        } else {
-            // 无线调试模式：保持原逻辑自动连接历史 ADB
-            startAutoConnect()
+        try {
+            runApiAvailabilityTest()
+        } catch (_: Throwable) {
         }
     }
 
@@ -726,11 +672,6 @@ private fun CalibrationScreen(
                 val topScroll = rememberScrollState()
                 val logScroll = rememberScrollState()
                 val logText = buildString {
-                    if (autoMessage.isNotBlank()) {
-                        append("[ADB] ")
-                        append(autoMessage)
-                        append('\n')
-                    }
                     if (apiAvailable == false) {
                         if (apiLastSummary.isNotBlank()) {
                             append("[API] ")
@@ -799,110 +740,61 @@ private fun CalibrationScreen(
                                 VisualStatusLine(
                                     label = "当前模式",
                                     ready = true,
-                                    readyText = if (adbMode == ConfigManager.ADB_MODE_SHIZUKU) "SHIZUKU" else "WIRELESS",
+                                    readyText = "SHIZUKU",
                                     pendingText = "",
                                 )
 
                                 Spacer(modifier = Modifier.height(12.dp))
 
-                                GradientGlowButton(
-                                    onClick = {
-                                        adbMode = ConfigManager.ADB_MODE_WIRELESS_DEBUG
-                                        try {
-                                            config.setAdbConnectMode(adbMode)
-                                        } catch (_: Exception) {
-                                        }
-                                        shizukuLastMessage = ""
-                                    },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    enabled = adbMode != ConfigManager.ADB_MODE_WIRELESS_DEBUG,
-                                ) {
-                                    Text("无线调试模式（自动连接历史 ADB）")
-                                }
+                                Spacer(modifier = Modifier.height(14.dp))
+                                VisualStatusLine(
+                                    label = "Shizuku Binder",
+                                    ready = shizukuBinderReady,
+                                    readyText = "READY",
+                                    pendingText = "OFFLINE",
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                VisualStatusLine(
+                                    label = "Shizuku 授权",
+                                    ready = shizukuGranted,
+                                    readyText = "GRANTED",
+                                    pendingText = "NEEDED",
+                                )
 
-                                if (adbMode == ConfigManager.ADB_MODE_WIRELESS_DEBUG) {
+                                if (!shizukuGranted) {
                                     Spacer(modifier = Modifier.height(12.dp))
                                     GradientGlowButton(
                                         onClick = {
                                             try {
-                                                PairingService.startPairingNotification(context.applicationContext, "")
-                                            } catch (_: Exception) {
+                                                if (!Shizuku.pingBinder()) {
+                                                    shizukuLastMessage = "未检测到 Shizuku 服务：请先安装/启用 Shizuku 并启动服务"
+                                                    return@GradientGlowButton
+                                                }
+                                                Shizuku.requestPermission(SHIZUKU_REQUEST_CODE)
+                                            } catch (t: Throwable) {
+                                                shizukuLastMessage = "请求 Shizuku 授权失败：${t.message}"
                                             }
-                                            startWirelessDebuggingSettings(context)
                                         },
                                         modifier = Modifier.fillMaxWidth(),
+                                        enabled = shizukuBinderReady,
                                     ) {
-                                        Text("申请无线调试配对")
+                                        Text(if (shizukuBinderReady) "申请 Shizuku 授权" else "等待 Shizuku 就绪")
                                     }
                                 }
 
-                                Spacer(modifier = Modifier.height(10.dp))
-
-                                GradientGlowButton(
-                                    onClick = {
-                                        adbMode = ConfigManager.ADB_MODE_SHIZUKU
-                                        try {
-                                            config.setAdbConnectMode(adbMode)
-                                        } catch (_: Exception) {
-                                        }
-                                    },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    enabled = adbMode != ConfigManager.ADB_MODE_SHIZUKU,
-                                ) {
-                                    Text("Shizuku 模式（授权后连接）")
-                                }
-
-                                if (adbMode == ConfigManager.ADB_MODE_SHIZUKU) {
-                                    Spacer(modifier = Modifier.height(14.dp))
-                                    VisualStatusLine(
-                                        label = "Shizuku Binder",
-                                        ready = shizukuBinderReady,
-                                        readyText = "READY",
-                                        pendingText = "OFFLINE",
-                                    )
+                                if (shizukuLastMessage.isNotBlank()) {
                                     Spacer(modifier = Modifier.height(10.dp))
-                                    VisualStatusLine(
-                                        label = "Shizuku 授权",
-                                        ready = shizukuGranted,
-                                        readyText = "GRANTED",
-                                        pendingText = "NEEDED",
+                                    Text(
+                                        text = shizukuLastMessage,
+                                        color = Color.White.copy(alpha = 0.55f),
+                                        fontFamily = FontFamily.Monospace,
                                     )
-
-                                    if (!shizukuGranted) {
-                                        Spacer(modifier = Modifier.height(12.dp))
-                                        GradientGlowButton(
-                                            onClick = {
-                                                try {
-                                                    if (!Shizuku.pingBinder()) {
-                                                        shizukuLastMessage = "未检测到 Shizuku 服务：请先安装/启用 Shizuku 并启动服务"
-                                                        return@GradientGlowButton
-                                                    }
-                                                    Shizuku.requestPermission(SHIZUKU_REQUEST_CODE)
-                                                } catch (t: Throwable) {
-                                                    shizukuLastMessage = "请求 Shizuku 授权失败：${t.message}"
-                                                }
-                                            },
-                                            modifier = Modifier.fillMaxWidth(),
-                                            enabled = shizukuBinderReady,
-                                        ) {
-                                            Text(if (shizukuBinderReady) "申请 Shizuku 授权" else "等待 Shizuku 就绪")
-                                        }
-                                    }
-
-                                    if (shizukuLastMessage.isNotBlank()) {
-                                        Spacer(modifier = Modifier.height(10.dp))
-                                        Text(
-                                            text = shizukuLastMessage,
-                                            color = Color.White.copy(alpha = 0.55f),
-                                            fontFamily = FontFamily.Monospace,
-                                        )
-                                    }
                                 }
                             }
                         }
 
                         Text(
-                            text = if (hasNotificationPermission) "通知权限已就绪" else "需要通知权限：用于配对码/状态通知",
+                            text = if (hasNotificationPermission) "通知权限已就绪" else "需要通知权限：用于状态通知",
                             color = Color.White.copy(alpha = 0.55f),
                             fontFamily = FontFamily.Monospace,
                         )
@@ -922,7 +814,7 @@ private fun CalibrationScreen(
                         Spacer(modifier = Modifier.height(12.dp))
 
                         VisualStatusLine(
-                            label = if (adbMode == ConfigManager.ADB_MODE_SHIZUKU) "Shizuku 授权" else "无线调试 ADB",
+                            label = "Shizuku 授权",
                             ready = connectMethodOk,
                             readyText = "READY",
                             pendingText = "WAITING",

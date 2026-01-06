@@ -52,6 +52,7 @@ import android.view.Surface
 import android.view.TextureView
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.animation.LinearInterpolator
 import android.widget.FrameLayout
@@ -264,6 +265,12 @@ class FloatingStatusService : Service() {
     private var summaryBubbleRemoving: Boolean = false
 
     private var isShowing = false
+
+    @Volatile
+    private var overlayDetachedBySystem: Boolean = false
+
+    @Volatile
+    private var foregroundStarted: Boolean = false
 
     @Volatile
     private var lastDiagLogAtMs: Long = 0L
@@ -1571,6 +1578,7 @@ class FloatingStatusService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        ensureForegroundStartedBestEffort(contentText = "语音助手运行中")
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         touchSlopPx = try {
             ViewConfiguration.get(this).scaledTouchSlop
@@ -1596,20 +1604,7 @@ class FloatingStatusService : Service() {
         }
 
         runCatching {
-            startForegroundInternal(contentText = "语音助手运行中")
-        }.onFailure {
-            runCatching {
-                val notification = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-                    .setSmallIcon(R.drawable.ic_mic)
-                    .setContentTitle("AutoGLM")
-                    .setContentText("语音助手运行中")
-                    .setOngoing(true)
-                    .setOnlyAlertOnce(true)
-                    .setPriority(NotificationCompat.PRIORITY_LOW)
-                    .setCategory(NotificationCompat.CATEGORY_SERVICE)
-                    .build()
-                startForeground(NOTIFICATION_ID, notification)
-            }
+            ensureForegroundStartedBestEffort(contentText = "语音助手运行中")
         }
 
         imeFocusDeadlockController = ImeFocusDeadlockController(workerScope).apply {
@@ -1622,6 +1617,14 @@ class FloatingStatusService : Service() {
                 }
             }
             start()
+        }
+    }
+
+    private fun ensureForegroundStartedBestEffort(contentText: String) {
+        if (foregroundStarted) return
+        runCatching {
+            startForegroundInternal(contentText)
+            foregroundStarted = true
         }
     }
 
@@ -1663,16 +1666,23 @@ class FloatingStatusService : Service() {
 
         if (Build.VERSION.SDK_INT >= 29) {
             try {
+                val fgsType = if (Build.VERSION.SDK_INT >= 34) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                } else {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                }
                 startForeground(
                     NOTIFICATION_ID,
                     notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                    fgsType
                 )
+                foregroundStarted = true
                 return
             } catch (_: Exception) {
             }
         }
         startForeground(NOTIFICATION_ID, notification)
+        foregroundStarted = true
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -1706,6 +1716,7 @@ class FloatingStatusService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        ensureForegroundStartedBestEffort(contentText = "语音助手运行中")
         val action = intent?.action
         when (action) {
             ACTION_START -> {
@@ -1858,8 +1869,89 @@ class FloatingStatusService : Service() {
         }
     }
 
+    private fun setOverlayFocusableBestEffort(focusable: Boolean) {
+        val wm = windowManager ?: return
+        val bar = barView
+        val lp = barLayoutParams
+        if (bar != null && lp != null) {
+            val oldFlags = lp.flags
+            val newFlags = if (focusable) {
+                oldFlags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+            } else {
+                oldFlags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            }
+            if (newFlags != oldFlags) {
+                lp.flags = newFlags
+                try {
+                    if (bar.parent != null) wm.updateViewLayout(bar, lp)
+                } catch (_: IllegalArgumentException) {
+                } catch (_: Exception) {
+                }
+            }
+        }
+
+        val toolbox = toolboxPanelView
+        val tlp = toolboxLayoutParams
+        if (toolbox != null && tlp != null) {
+            val oldFlags = tlp.flags
+            val newFlags = if (focusable) {
+                oldFlags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+            } else {
+                oldFlags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            }
+            if (newFlags != oldFlags) {
+                tlp.flags = newFlags
+                try {
+                    if (toolbox.parent != null) wm.updateViewLayout(toolbox, tlp)
+                } catch (_: IllegalArgumentException) {
+                } catch (_: Exception) {
+                }
+            }
+        }
+    }
+
+    private fun refreshOverlayAfterFocusReturnBestEffort() {
+        val wm = windowManager ?: return
+        val bar = barView
+        val lp = barLayoutParams
+        if (bar != null && lp != null) {
+            try {
+                if (bar.parent != null) wm.updateViewLayout(bar, lp)
+            } catch (_: IllegalArgumentException) {
+            } catch (_: Exception) {
+            }
+            try {
+                if (bar.visibility != View.VISIBLE) bar.visibility = View.VISIBLE
+                bar.requestLayout()
+                bar.invalidate()
+            } catch (_: Exception) {
+            }
+        }
+
+        val toolbox = toolboxPanelView
+        val tlp = toolboxLayoutParams
+        if (toolbox != null && tlp != null) {
+            try {
+                if (toolbox.parent != null) wm.updateViewLayout(toolbox, tlp)
+            } catch (_: IllegalArgumentException) {
+            } catch (_: Exception) {
+            }
+            try {
+                toolbox.requestLayout()
+                toolbox.invalidate()
+            } catch (_: Exception) {
+            }
+        }
+
+        updateSummaryBubblePositionIfNeeded()
+    }
+
     private fun ensureViewCreatedIfNeeded() {
-        if (barView != null) return
+        val existing = barView
+        if (existing != null && existing.parent != null) return
+        if (existing != null && existing.parent == null) {
+            overlayDetachedBySystem = true
+        }
 
         val context = mainDisplayContext()
         val barWidth = handleWidthPx()
@@ -1870,7 +1962,34 @@ class FloatingStatusService : Service() {
         barBackgroundDrawable = bgDrawable
         applyDockBackground(dockOnRight)
 
-        val root = FrameLayout(context).apply {
+        val root = object : FrameLayout(context) {
+            private val focusListener = ViewTreeObserver.OnWindowFocusChangeListener { hasFocus: Boolean ->
+                if (!hasFocus) {
+                    return@OnWindowFocusChangeListener
+                }
+                mainHandler.postDelayed({
+                    refreshOverlayAfterFocusReturnBestEffort()
+                }, 200L)
+            }
+
+            override fun onAttachedToWindow() {
+                super.onAttachedToWindow()
+                try {
+                    viewTreeObserver.addOnWindowFocusChangeListener(focusListener)
+                } catch (_: Exception) {
+                }
+            }
+
+            override fun onDetachedFromWindow() {
+                try {
+                    viewTreeObserver.removeOnWindowFocusChangeListener(focusListener)
+                } catch (_: Exception) {
+                }
+
+                overlayDetachedBySystem = true
+                super.onDetachedFromWindow()
+            }
+        }.apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT
@@ -1878,8 +1997,8 @@ class FloatingStatusService : Service() {
             clipChildren = false
             clipToPadding = false
             isClickable = false
-            isFocusable = false
-            isFocusableInTouchMode = false
+            isFocusable = true
+            isFocusableInTouchMode = true
         }
 
         val container = LinearLayout(context).apply {
@@ -2614,8 +2733,7 @@ class FloatingStatusService : Service() {
             handleWidthPx(),
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
@@ -2631,8 +2749,7 @@ class FloatingStatusService : Service() {
             toolboxWidthPx(),
             toolboxWindowHeightPx(),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
@@ -2660,6 +2777,8 @@ class FloatingStatusService : Service() {
             windowManager?.updateViewLayout(panel, toolboxParams)
         } catch (_: Exception) {
         }
+
+        setOverlayFocusableBestEffort(focusable = true)
 
         barView = root
         statusTextView = tv
@@ -3362,7 +3481,7 @@ class FloatingStatusService : Service() {
         return try {
             ConfigManager(this).getAdbConnectMode()
         } catch (_: Exception) {
-            ConfigManager.ADB_MODE_WIRELESS_DEBUG
+            ConfigManager.ADB_MODE_SHIZUKU
         }
     }
 
@@ -3584,7 +3703,7 @@ class FloatingStatusService : Service() {
                 val connectMode = try {
                     ConfigManager(this@FloatingStatusService).getAdbConnectMode()
                 } catch (_: Exception) {
-                    ConfigManager.ADB_MODE_WIRELESS_DEBUG
+                    ConfigManager.ADB_MODE_SHIZUKU
                 }
                 finalText = if (connectMode == ConfigManager.ADB_MODE_SHIZUKU) {
                     mod.callAttr("run_task", task, callback, null).toString()

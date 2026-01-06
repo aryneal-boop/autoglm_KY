@@ -89,32 +89,7 @@ object ShizukuBridge {
 
     @JvmStatic
     fun resolvePackage(query: String?): String {
-        val q = query?.trim().orEmpty()
-        if (q.isEmpty()) return ""
-        if (q.contains('.')) return q
-        val ctx = AppState.getAppContext() ?: return ""
-        val pm = ctx.packageManager ?: return ""
-        return try {
-            val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
-            var best: String? = null
-            for (app in apps) {
-                val label = try {
-                    pm.getApplicationLabel(app).toString()
-                } catch (_: Throwable) {
-                    ""
-                }
-                if (label.isEmpty()) continue
-                if (label == q) {
-                    return app.packageName ?: ""
-                }
-                if (best == null && label.equals(q, ignoreCase = true)) {
-                    best = app.packageName
-                }
-            }
-            best ?: ""
-        } catch (_: Throwable) {
-            ""
-        }
+        return AppPackageResolver.resolvePackage(query)
     }
 
     @JvmStatic
