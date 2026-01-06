@@ -41,7 +41,7 @@
 ### 1. 前提条件
 * **系统需求**：目前仅在 **小米 (HyperOS/MIUI)** 上通过测试。
 * **权限管理**：手机必须安装并激活 [Shizuku](https://shizuku.riceroot.com/)。
-* **API Key**：准备好你的 [智谱 AI](https://open.bigmodel.cn/) API Key。
+* **API Key**：准备好你的 [智谱 AI](https://open.bigmodel.cn/usercenter/proj-mgmt/apikeys) API Key。
 
 ### 2. 安装步骤
 1. 前往 [Releases](../../releases) 页面下载最新的 APK 文件。
