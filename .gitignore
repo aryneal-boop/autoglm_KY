@@ -10,6 +10,9 @@
 .DS_Store
 /build
 /captures
+/app_VirtualDisplay
+/server
+/PHP
 .externalNativeBuild
 .cxx
 local.properties

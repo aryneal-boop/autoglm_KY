@@ -1,0 +1,186 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.example.pingmutest"
+4    android:versionCode="1"
+5    android:versionName="1.0" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="30"
+9        android:targetSdkVersion="36" />
+10
+11    <queries>
+11-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:5:5-10:15
+12        <intent>
+12-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:6:9-9:18
+13            <action android:name="android.intent.action.MAIN" />
+13-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:7:13-65
+13-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:7:21-62
+14
+15            <category android:name="android.intent.category.LAUNCHER" />
+15-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:8:13-73
+15-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:8:23-70
+16        </intent>
+17    </queries>
+18
+19    <permission
+19-->[androidx.core:core:1.17.0] C:\Users\itian\.gradle\caches\8.13\transforms\2915ac4a79e79f07bf53eedf72d0e7fb\transformed\core-1.17.0\AndroidManifest.xml:22:5-24:47
+20        android:name="com.example.pingmutest.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+20-->[androidx.core:core:1.17.0] C:\Users\itian\.gradle\caches\8.13\transforms\2915ac4a79e79f07bf53eedf72d0e7fb\transformed\core-1.17.0\AndroidManifest.xml:23:9-81
+21        android:protectionLevel="signature" />
+21-->[androidx.core:core:1.17.0] C:\Users\itian\.gradle\caches\8.13\transforms\2915ac4a79e79f07bf53eedf72d0e7fb\transformed\core-1.17.0\AndroidManifest.xml:24:9-44
+22
+23    <uses-permission android:name="com.example.pingmutest.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
+23-->[androidx.core:core:1.17.0] C:\Users\itian\.gradle\caches\8.13\transforms\2915ac4a79e79f07bf53eedf72d0e7fb\transformed\core-1.17.0\AndroidManifest.xml:26:5-97
+23-->[androidx.core:core:1.17.0] C:\Users\itian\.gradle\caches\8.13\transforms\2915ac4a79e79f07bf53eedf72d0e7fb\transformed\core-1.17.0\AndroidManifest.xml:26:22-94
+24    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+24-->[dev.rikka.shizuku:provider:13.1.5] C:\Users\itian\.gradle\caches\8.13\transforms\b3acc57f0c1f18a3eeeaeefcb554d6cd\transformed\provider-13.1.5\AndroidManifest.xml:8:5-78
+24-->[dev.rikka.shizuku:provider:13.1.5] C:\Users\itian\.gradle\caches\8.13\transforms\b3acc57f0c1f18a3eeeaeefcb554d6cd\transformed\provider-13.1.5\AndroidManifest.xml:8:22-75
+25
+26    <application
+26-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:12:5-40:19
+27        android:name="com.example.pingmutest.PingmutestApplication"
+27-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:13:9-46
+28        android:allowBackup="true"
+28-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:14:9-35
+29        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+29-->[androidx.core:core:1.17.0] C:\Users\itian\.gradle\caches\8.13\transforms\2915ac4a79e79f07bf53eedf72d0e7fb\transformed\core-1.17.0\AndroidManifest.xml:28:18-86
+30        android:dataExtractionRules="@xml/data_extraction_rules"
+30-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:15:9-65
+31        android:debuggable="true"
+32        android:extractNativeLibs="false"
+33        android:fullBackupContent="@xml/backup_rules"
+33-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:16:9-54
+34        android:icon="@mipmap/ic_launcher"
+34-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:17:9-43
+35        android:label="@string/app_name"
+35-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:18:9-41
+36        android:roundIcon="@mipmap/ic_launcher_round"
+36-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:19:9-54
+37        android:supportsRtl="true"
+37-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:20:9-35
+38        android:testOnly="true"
+39        android:theme="@style/Theme.Pingmutest" >
+39-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:21:9-48
+40        <provider
+41            android:name="rikka.shizuku.ShizukuProvider"
+41-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:23:13-57
+42            android:authorities="com.example.pingmutest.shizuku"
+42-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:24:13-59
+43            android:enabled="true"
+43-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:25:13-35
+44            android:exported="true"
+44-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:26:13-36
+45            android:multiprocess="false" />
+45-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:27:13-41
+46
+47        <activity
+47-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:29:9-39:20
+48            android:name="com.example.pingmutest.MainActivity"
+48-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:30:13-41
+49            android:exported="true"
+49-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:31:13-36
+50            android:label="@string/app_name"
+50-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:32:13-45
+51            android:theme="@style/Theme.Pingmutest" >
+51-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:33:13-52
+52            <intent-filter>
+52-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:34:13-38:29
+53                <action android:name="android.intent.action.MAIN" />
+53-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:7:13-65
+53-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:7:21-62
+54
+55                <category android:name="android.intent.category.LAUNCHER" />
+55-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:8:13-73
+55-->D:\android\pingmutest-master\app_VirtualDisplay\src\main\AndroidManifest.xml:8:23-70
+56            </intent-filter>
+57        </activity>
+58        <activity
+58-->[androidx.compose.ui:ui-tooling-android:1.9.2] C:\Users\itian\.gradle\caches\8.13\transforms\b234c19dc858acb8031c1e46bd8b6f3c\transformed\ui-tooling\AndroidManifest.xml:23:9-25:39
+59            android:name="androidx.compose.ui.tooling.PreviewActivity"
+59-->[androidx.compose.ui:ui-tooling-android:1.9.2] C:\Users\itian\.gradle\caches\8.13\transforms\b234c19dc858acb8031c1e46bd8b6f3c\transformed\ui-tooling\AndroidManifest.xml:24:13-71
+60            android:exported="true" />
+60-->[androidx.compose.ui:ui-tooling-android:1.9.2] C:\Users\itian\.gradle\caches\8.13\transforms\b234c19dc858acb8031c1e46bd8b6f3c\transformed\ui-tooling\AndroidManifest.xml:25:13-36
+61        <activity
+61-->[androidx.compose.ui:ui-test-manifest:1.9.2] C:\Users\itian\.gradle\caches\8.13\transforms\355ed3fe73ef2513f4d9071774827ac0\transformed\ui-test-manifest-1.9.2\AndroidManifest.xml:23:9-26:79
+62            android:name="androidx.activity.ComponentActivity"
+62-->[androidx.compose.ui:ui-test-manifest:1.9.2] C:\Users\itian\.gradle\caches\8.13\transforms\355ed3fe73ef2513f4d9071774827ac0\transformed\ui-test-manifest-1.9.2\AndroidManifest.xml:24:13-63
+63            android:exported="true"
+63-->[androidx.compose.ui:ui-test-manifest:1.9.2] C:\Users\itian\.gradle\caches\8.13\transforms\355ed3fe73ef2513f4d9071774827ac0\transformed\ui-test-manifest-1.9.2\AndroidManifest.xml:25:13-36
+64            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+64-->[androidx.compose.ui:ui-test-manifest:1.9.2] C:\Users\itian\.gradle\caches\8.13\transforms\355ed3fe73ef2513f4d9071774827ac0\transformed\ui-test-manifest-1.9.2\AndroidManifest.xml:26:13-76
+65
+66        <provider
+66-->[androidx.emoji2:emoji2:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\a1569444ea2168a42ab7a42caee4958c\transformed\emoji2-1.4.0\AndroidManifest.xml:24:9-32:20
+67            android:name="androidx.startup.InitializationProvider"
+67-->[androidx.emoji2:emoji2:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\a1569444ea2168a42ab7a42caee4958c\transformed\emoji2-1.4.0\AndroidManifest.xml:25:13-67
+68            android:authorities="com.example.pingmutest.androidx-startup"
+68-->[androidx.emoji2:emoji2:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\a1569444ea2168a42ab7a42caee4958c\transformed\emoji2-1.4.0\AndroidManifest.xml:26:13-68
+69            android:exported="false" >
+69-->[androidx.emoji2:emoji2:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\a1569444ea2168a42ab7a42caee4958c\transformed\emoji2-1.4.0\AndroidManifest.xml:27:13-37
+70            <meta-data
+70-->[androidx.emoji2:emoji2:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\a1569444ea2168a42ab7a42caee4958c\transformed\emoji2-1.4.0\AndroidManifest.xml:29:13-31:52
+71                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+71-->[androidx.emoji2:emoji2:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\a1569444ea2168a42ab7a42caee4958c\transformed\emoji2-1.4.0\AndroidManifest.xml:30:17-75
+72                android:value="androidx.startup" />
+72-->[androidx.emoji2:emoji2:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\a1569444ea2168a42ab7a42caee4958c\transformed\emoji2-1.4.0\AndroidManifest.xml:31:17-49
+73            <meta-data
+73-->[androidx.lifecycle:lifecycle-process:2.10.0] C:\Users\itian\.gradle\caches\8.13\transforms\8bc406895b0b97bedd8f8b9fe003a56d\transformed\lifecycle-process-2.10.0\AndroidManifest.xml:29:13-31:52
+74                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
+74-->[androidx.lifecycle:lifecycle-process:2.10.0] C:\Users\itian\.gradle\caches\8.13\transforms\8bc406895b0b97bedd8f8b9fe003a56d\transformed\lifecycle-process-2.10.0\AndroidManifest.xml:30:17-78
+75                android:value="androidx.startup" />
+75-->[androidx.lifecycle:lifecycle-process:2.10.0] C:\Users\itian\.gradle\caches\8.13\transforms\8bc406895b0b97bedd8f8b9fe003a56d\transformed\lifecycle-process-2.10.0\AndroidManifest.xml:31:17-49
+76            <meta-data
+76-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:29:13-31:52
+77                android:name="androidx.profileinstaller.ProfileInstallerInitializer"
+77-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:30:17-85
+78                android:value="androidx.startup" />
+78-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:31:17-49
+79        </provider>
+80
+81        <meta-data
+81-->[dev.rikka.shizuku:provider:13.1.5] C:\Users\itian\.gradle\caches\8.13\transforms\b3acc57f0c1f18a3eeeaeefcb554d6cd\transformed\provider-13.1.5\AndroidManifest.xml:11:9-13:36
+82            android:name="moe.shizuku.client.V3_SUPPORT"
+82-->[dev.rikka.shizuku:provider:13.1.5] C:\Users\itian\.gradle\caches\8.13\transforms\b3acc57f0c1f18a3eeeaeefcb554d6cd\transformed\provider-13.1.5\AndroidManifest.xml:12:13-57
+83            android:value="true" />
+83-->[dev.rikka.shizuku:provider:13.1.5] C:\Users\itian\.gradle\caches\8.13\transforms\b3acc57f0c1f18a3eeeaeefcb554d6cd\transformed\provider-13.1.5\AndroidManifest.xml:13:13-33
+84
+85        <receiver
+85-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:34:9-52:20
+86            android:name="androidx.profileinstaller.ProfileInstallReceiver"
+86-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:35:13-76
+87            android:directBootAware="false"
+87-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:36:13-44
+88            android:enabled="true"
+88-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:37:13-35
+89            android:exported="true"
+89-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:38:13-36
+90            android:permission="android.permission.DUMP" >
+90-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:39:13-57
+91            <intent-filter>
+91-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:40:13-42:29
+92                <action android:name="androidx.profileinstaller.action.INSTALL_PROFILE" />
+92-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:41:17-91
+92-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:41:25-88
+93            </intent-filter>
+94            <intent-filter>
+94-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:43:13-45:29
+95                <action android:name="androidx.profileinstaller.action.SKIP_FILE" />
+95-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:44:17-85
+95-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:44:25-82
+96            </intent-filter>
+97            <intent-filter>
+97-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:46:13-48:29
+98                <action android:name="androidx.profileinstaller.action.SAVE_PROFILE" />
+98-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:47:17-88
+98-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:47:25-85
+99            </intent-filter>
+100            <intent-filter>
+100-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:49:13-51:29
+101                <action android:name="androidx.profileinstaller.action.BENCHMARK_OPERATION" />
+101-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:50:17-95
+101-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\itian\.gradle\caches\8.13\transforms\d287d99f76a2b244a1c1e11d803c1e5e\transformed\profileinstaller-1.4.0\AndroidManifest.xml:50:25-92
+102            </intent-filter>
+103        </receiver>
+104    </application>
+105
+106</manifest>
